@@ -29,3 +29,12 @@ func LoadState() (PairedState, error) {
 	err = json.Unmarshal(data, &state)
 	return state, err
 }
+
+func HasState() bool {
+	_, err := os.Stat(stateFile)
+	return !os.IsNotExist(err)
+}
+
+func DeleteState() error {
+	return os.Remove(stateFile)
+}

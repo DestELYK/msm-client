@@ -12,9 +12,10 @@ import (
 )
 
 type ClientConfig struct {
-	ClientID       string `json:"client_id"`
-	DeviceName     string `json:"device_name,omitempty"`     // Optional device name
-	UpdateInterval int    `json:"update_interval,omitempty"` // in seconds
+	ClientID        string `json:"client_id"`
+	DeviceName      string `json:"device_name,omitempty"`      // Optional device name
+	UpdateInterval  int    `json:"update_interval,omitempty"`  // in seconds
+	DisableCommands bool   `json:"disable_commands,omitempty"` // Disable remote command execution
 }
 
 const configFile = "client.json"
@@ -34,6 +35,7 @@ func LoadOrCreateConfig() (ClientConfig, error) {
 
 	// Generate new UUID
 	cfg.ClientID = uuid.New().String()
+	cfg.UpdateInterval = 30 // Set default update interval
 	if err := SaveConfig(cfg); err != nil {
 		return cfg, err
 	}
@@ -66,7 +68,7 @@ func LoadEnv() error {
 		fmt.Println("Failed to load .env file, using system environment variables")
 	}
 
-	if err := os.Getenv("MSM_SECRET_KEY"); err == "" {
+	if os.Getenv("MSM_SECRET_KEY") == "" {
 		return errors.New("MSM_SECRET_KEY environment variable is required")
 	}
 	return nil
