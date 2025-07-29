@@ -33,8 +33,9 @@ type MessageType string
 
 const (
 	// Incoming message types
-	MessageTypePing    MessageType = "ping"
-	MessageTypeCommand MessageType = "command"
+	MessageTypePing        MessageType = "ping"
+	MessageTypeCommand     MessageType = "command"
+	MessageTypeDeactivated MessageType = "deactivated"
 
 	// Outgoing message types
 	MessageTypePong            MessageType = "pong"
@@ -154,6 +155,7 @@ func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
 		// Channel to signal when connection should close
 		done := make(chan struct{})
 		stateDeleted := make(chan struct{})
+		deactivated := make(chan struct{})
 		var closeOnce sync.Once
 
 		// Goroutine to listen for incoming messages
@@ -167,7 +169,14 @@ func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
 					return
 				}
 
-				// Handle incoming messages
+				// Check if this is a deactivated message
+				if msgType, ok := message["type"].(string); ok && MessageType(msgType) == MessageTypeDeactivated {
+					handleDeactivated(c, message)
+					close(deactivated)
+					return
+				}
+
+				// Handle other incoming messages
 				handleMessage(c, message)
 			}
 		}()
@@ -204,6 +213,8 @@ func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
 					return
 				case <-stateDeleted:
 					return
+				case <-deactivated:
+					return
 				}
 			}
 		}()
@@ -232,6 +243,8 @@ func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
 					return
 				case <-stateDeleted:
 					return
+				case <-deactivated:
+					return
 				}
 			}
 		}()
@@ -245,6 +258,10 @@ func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
 			clearConnection()
 			log.Println("State file deleted, closing WebSocket to restart pairing server")
 			return // Exit function to allow pairing server restart
+		case <-deactivated:
+			clearConnection()
+			log.Println("Device deactivated by server, exiting WebSocket connection")
+			return // Exit function to stop WebSocket and allow pairing restart
 		}
 	}
 }
@@ -265,6 +282,8 @@ func handleMessage(c *websocket.Conn, message map[string]interface{}) {
 		})
 	case MessageTypeCommand:
 		handleCommand(c, message)
+	case MessageTypeDeactivated:
+		handleDeactivated(c, message)
 	default:
 		log.Printf("Received unknown message type '%s': %v", msgType, message)
 	}
@@ -337,6 +356,28 @@ func handleCommand(c *websocket.Conn, message map[string]interface{}) {
 			"status":  StatusError,
 			"message": "Unknown command",
 		})
+	}
+}
+
+func handleDeactivated(_ *websocket.Conn, message map[string]interface{}) {
+	deactivatedMessage := "Device deactivated by server"
+	if msg, ok := message["message"].(string); ok {
+		deactivatedMessage = msg
+	}
+
+	log.Printf("DEACTIVATED: %s", deactivatedMessage)
+	log.Println("Device has been deactivated by the server. Resetting pairing state...")
+
+	// Close the WebSocket connection immediately
+	clearConnection()
+
+	// Remove the state file to reset pairing
+	if state.HasState() {
+		if err := state.DeleteState(); err != nil {
+			log.Printf("Failed to delete state file: %v", err)
+		} else {
+			log.Println("State file deleted successfully - pairing reset")
+		}
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/google/uuid"
 
@@ -18,12 +19,23 @@ type ClientConfig struct {
 	DisableCommands bool   `json:"disable_commands,omitempty"` // Disable remote command execution
 }
 
+const DEFAULT_PATH = "/etc/msm-client" // Default path for config file
+
 const configFile = "client.json"
+
+// getConfigPath returns the path for the config file based on environment variable or default
+func getConfigPath() string {
+	if path := os.Getenv("MSC_CONFIG_PATH"); path != "" {
+		return filepath.Join(path, configFile)
+	}
+	return filepath.Join(DEFAULT_PATH, configFile)
+}
 
 func LoadOrCreateConfig() (ClientConfig, error) {
 	var cfg ClientConfig
+	configPath := getConfigPath()
 
-	if data, err := os.ReadFile(configFile); err == nil {
+	if data, err := os.ReadFile(configPath); err == nil {
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			return cfg, err
 		}
@@ -55,11 +67,20 @@ func ValidateConfig(cfg ClientConfig) error {
 }
 
 func SaveConfig(cfg ClientConfig) error {
+	configPath := getConfigPath()
+
+	// Create directory if it doesn't exist
+	if dir := filepath.Dir(configPath); dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+	}
+
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configFile, data, 0600)
+	return os.WriteFile(configPath, data, 0600)
 }
 
 func LoadEnv() error {

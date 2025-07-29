@@ -7,6 +7,8 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -46,8 +48,18 @@ var (
 	callbackMutex    sync.RWMutex
 )
 
+const DEFAULT_PATH = "/var/lib/msm-client" // Default path for pairing file
 const pairingCodeFile = "pairing_code.txt"
 const maxFailCount = 3
+
+// getPairingPath returns the path for the pairing code file based on environment variable or default
+func getPairingPath() string {
+	if path := os.Getenv("MSC_PAIRING_PATH"); path != "" {
+		return filepath.Join(path, pairingCodeFile)
+	}
+	return filepath.Join(DEFAULT_PATH, pairingCodeFile)
+}
+
 const pairingCodeCleanupInterval = 5 * time.Second
 const pairingCodeExpiry = 5 * time.Minute
 const pairingCodeLength = 6
@@ -488,11 +500,21 @@ func WatchPairingCode(interval time.Duration) {
 }
 
 func SavePairingCode(code string) error {
-	return utils.WriteFile(pairingCodeFile, []byte(code))
+	pairingPath := getPairingPath()
+
+	// Create directory if it doesn't exist
+	if dir := filepath.Dir(pairingPath); dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+	}
+
+	return utils.WriteFile(pairingPath, []byte(code))
 }
 
 func LoadPairingCode() (string, error) {
-	data, err := utils.ReadFile(pairingCodeFile)
+	pairingPath := getPairingPath()
+	data, err := utils.ReadFile(pairingPath)
 	if err != nil {
 		return "", err
 	}
@@ -500,5 +522,6 @@ func LoadPairingCode() (string, error) {
 }
 
 func DeletePairingCode() error {
-	return utils.DeleteFile(pairingCodeFile)
+	pairingPath := getPairingPath()
+	return utils.DeleteFile(pairingPath)
 }

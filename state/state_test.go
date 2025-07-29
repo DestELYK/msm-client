@@ -6,7 +6,27 @@ import (
 	"testing"
 )
 
+// Helper function to set up temporary directories for testing
+func setupTestPaths(t *testing.T) (cleanup func()) {
+	tempDir := t.TempDir()
+
+	// Store original environment variable
+	originalStatePath := os.Getenv("MSC_STATE_PATH")
+
+	// Set environment variable to use temp directory
+	os.Setenv("MSC_STATE_PATH", tempDir)
+
+	return func() {
+		// Restore original environment variable
+		os.Setenv("MSC_STATE_PATH", originalStatePath)
+	}
+}
+
 func TestSaveAndLoadState(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove(stateFile)
 
 	testState := PairedState{
@@ -40,6 +60,10 @@ func TestSaveAndLoadState(t *testing.T) {
 }
 
 func TestHasState(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove(stateFile)
 
 	// Initially, no state file should exist
@@ -64,6 +88,10 @@ func TestHasState(t *testing.T) {
 }
 
 func TestDeleteState(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove(stateFile)
 
 	// Create state file first
@@ -115,6 +143,10 @@ func TestLoadStateFileNotExists(t *testing.T) {
 }
 
 func TestSaveStateWithEmptyValues(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove(stateFile)
 
 	testState := PairedState{
@@ -141,6 +173,10 @@ func TestSaveStateWithEmptyValues(t *testing.T) {
 }
 
 func TestStateFilePermissions(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove(stateFile)
 
 	testState := PairedState{
@@ -154,7 +190,8 @@ func TestStateFilePermissions(t *testing.T) {
 	}
 
 	// Check file permissions
-	fileInfo, err := os.Stat(stateFile)
+	statePath := getStatePath()
+	fileInfo, err := os.Stat(statePath)
 	if err != nil {
 		t.Fatalf("Failed to get file info: %v", err)
 	}
@@ -182,6 +219,10 @@ func TestStateFileCorrupted(t *testing.T) {
 }
 
 func TestStateJSONFormat(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove(stateFile)
 
 	testState := PairedState{
@@ -195,7 +236,8 @@ func TestStateJSONFormat(t *testing.T) {
 	}
 
 	// Read raw file content
-	data, err := os.ReadFile(stateFile)
+	statePath := getStatePath()
+	data, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatalf("Failed to read state file: %v", err)
 	}

@@ -26,6 +26,28 @@ func cleanupTest() {
 	time.Sleep(100 * time.Millisecond) // Allow cleanup to complete
 }
 
+// Helper function to set up temporary directories for testing
+func setupTestPaths(t *testing.T) (cleanup func()) {
+	tempDir := t.TempDir()
+
+	// Store original environment variables
+	originalConfigPath := os.Getenv("MSC_CONFIG_PATH")
+	originalStatePath := os.Getenv("MSC_STATE_PATH")
+	originalPairingPath := os.Getenv("MSC_PAIRING_PATH")
+
+	// Set environment variables to use temp directory
+	os.Setenv("MSC_CONFIG_PATH", tempDir)
+	os.Setenv("MSC_STATE_PATH", tempDir)
+	os.Setenv("MSC_PAIRING_PATH", tempDir)
+
+	return func() {
+		// Restore original environment variables
+		os.Setenv("MSC_CONFIG_PATH", originalConfigPath)
+		os.Setenv("MSC_STATE_PATH", originalStatePath)
+		os.Setenv("MSC_PAIRING_PATH", originalPairingPath)
+	}
+}
+
 // Helper function to find an available port
 func findAvailablePort() (int, error) {
 	listener, err := net.Listen("tcp", ":0")
@@ -68,6 +90,10 @@ func startTestServer(cfg config.ClientConfig, port int) {
 }
 
 func TestStartPairingServerCallbacks(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	// Clean up
 	defer os.Remove(pairingCodeFile)
 	defer os.Remove("paired.json")
@@ -228,6 +254,10 @@ func TestStartPairingServerCallbacks(t *testing.T) {
 }
 
 func TestStartPairingServerWithRealServer(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	// Clean up
 	defer os.Remove(pairingCodeFile)
 	defer os.Remove("paired.json")

@@ -2,11 +2,22 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"msm-client/config"
 	"msm-client/state"
 )
+
+// setupTestPaths sets up temporary directories for testing
+func setupTestPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Set environment variables to use temp directories
+	os.Setenv("MSC_CONFIG_PATH", filepath.Join(tmpDir, "config"))
+	os.Setenv("MSC_STATE_PATH", filepath.Join(tmpDir, "state"))
+	os.Setenv("MSC_PAIRING_PATH", filepath.Join(tmpDir, "pairing"))
+}
 
 func TestConfigValidation(t *testing.T) {
 	// Test config validation logic that would be used in main
@@ -57,9 +68,7 @@ func TestConfigValidation(t *testing.T) {
 }
 
 func TestStateLifecycle(t *testing.T) {
-	// Clean up any existing state file first
-	os.Remove("paired.json")
-	defer os.Remove("paired.json")
+	setupTestPaths(t)
 
 	// Test the state lifecycle that main.go manages
 	testState := state.PairedState{
@@ -106,7 +115,7 @@ func TestStateLifecycle(t *testing.T) {
 }
 
 func TestConfigCreation(t *testing.T) {
-	defer os.Remove("client.json")
+	setupTestPaths(t)
 
 	// Test config creation (what happens on first run)
 	cfg, err := config.LoadOrCreateConfig()
@@ -118,8 +127,9 @@ func TestConfigCreation(t *testing.T) {
 		t.Fatal("ClientID should be generated")
 	}
 
-	// Verify config file was created
-	if _, err := os.Stat("client.json"); os.IsNotExist(err) {
+	// Verify config file was created in the temp directory
+	configPath := filepath.Join(os.Getenv("MSC_CONFIG_PATH"), "client.json")
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		t.Fatal("Config file should be created")
 	}
 
@@ -135,8 +145,7 @@ func TestConfigCreation(t *testing.T) {
 }
 
 func TestApplicationStates(t *testing.T) {
-	defer os.Remove("paired.json")
-	defer os.Remove("client.json")
+	setupTestPaths(t)
 
 	// Test the main application state transitions
 
@@ -187,7 +196,7 @@ func TestApplicationStates(t *testing.T) {
 }
 
 func TestWebSocketConnectionFlow(t *testing.T) {
-	defer os.Remove("paired.json")
+	setupTestPaths(t)
 
 	// Test the flow that main.go handles for WebSocket connections
 	testState := state.PairedState{
@@ -231,13 +240,19 @@ func TestWebSocketConnectionFlow(t *testing.T) {
 }
 
 func TestConfigValidationInMain(t *testing.T) {
-	defer os.Remove("client.json")
+	setupTestPaths(t)
 
 	// Test the config validation that happens in main
 
-	// Create invalid config file
+	// Create invalid config file in the temp directory
+	configPath := filepath.Join(os.Getenv("MSC_CONFIG_PATH"), "client.json")
+	err := os.MkdirAll(filepath.Dir(configPath), 0755)
+	if err != nil {
+		t.Fatalf("Failed to create config directory: %v", err)
+	}
+
 	invalidConfig := `{"client_id": "", "update_interval": 0}`
-	err := os.WriteFile("client.json", []byte(invalidConfig), 0600)
+	err = os.WriteFile(configPath, []byte(invalidConfig), 0600)
 	if err != nil {
 		t.Fatalf("Failed to create invalid config: %v", err)
 	}
@@ -250,7 +265,7 @@ func TestConfigValidationInMain(t *testing.T) {
 }
 
 func TestPairingToWebSocketTransition(t *testing.T) {
-	defer os.Remove("paired.json")
+	setupTestPaths(t)
 
 	// Test the transition from pairing to WebSocket that main.go handles
 
@@ -289,7 +304,7 @@ func TestPairingToWebSocketTransition(t *testing.T) {
 }
 
 func TestContinuousOperationLoop(t *testing.T) {
-	defer os.Remove("paired.json")
+	setupTestPaths(t)
 
 	// Test the continuous operation loop logic that main.go implements
 

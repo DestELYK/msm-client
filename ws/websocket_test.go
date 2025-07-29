@@ -20,6 +20,28 @@ func init() {
 	TestMode = true
 }
 
+// Helper function to set up temporary directories for testing
+func setupTestPaths(t *testing.T) (cleanup func()) {
+	tempDir := t.TempDir()
+
+	// Store original environment variables
+	originalStatePath := os.Getenv("MSC_STATE_PATH")
+	originalConfigPath := os.Getenv("MSC_CONFIG_PATH")
+	originalPairingPath := os.Getenv("MSC_PAIRING_PATH")
+
+	// Set environment variables to use temp directory
+	os.Setenv("MSC_STATE_PATH", tempDir)
+	os.Setenv("MSC_CONFIG_PATH", tempDir)
+	os.Setenv("MSC_PAIRING_PATH", tempDir)
+
+	return func() {
+		// Restore original environment variables
+		os.Setenv("MSC_STATE_PATH", originalStatePath)
+		os.Setenv("MSC_CONFIG_PATH", originalConfigPath)
+		os.Setenv("MSC_PAIRING_PATH", originalPairingPath)
+	}
+}
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true // Allow all origins for testing
@@ -123,6 +145,10 @@ func (m *MockWebSocketServer) Close() {
 
 // TestConnectWebSocket tests the actual ConnectWebSocket function
 func TestConnectWebSocket(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove("paired.json")
 
 	mockServer := NewMockWebSocketServer()
@@ -186,6 +212,10 @@ func TestConnectWebSocket(t *testing.T) {
 
 // TestHandleMessage tests the handleMessage function with ping messages
 func TestHandleMessage(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove("paired.json")
 
 	mockServer := NewMockWebSocketServer()
@@ -230,6 +260,10 @@ func TestHandleMessage(t *testing.T) {
 
 // TestHandleCommand tests the handleCommand function with different commands
 func TestHandleCommand(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove("paired.json")
 
 	mockServer := NewMockWebSocketServer()
@@ -320,6 +354,10 @@ func TestHandleCommand(t *testing.T) {
 
 // TestHandleCommandDisabled tests the handleCommand function when commands are disabled
 func TestHandleCommandDisabled(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove("paired.json")
 
 	mockServer := NewMockWebSocketServer()
@@ -421,6 +459,10 @@ func TestHandleCommandDisabled(t *testing.T) {
 
 // TestHandleCommandEnabled tests the handleCommand function when commands are enabled (default)
 func TestHandleCommandEnabled(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove("paired.json")
 
 	mockServer := NewMockWebSocketServer()
@@ -496,6 +538,10 @@ func TestHandleCommandEnabled(t *testing.T) {
 
 // TestConnectionFailure tests connection failure scenarios
 func TestConnectionFailure(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove("paired.json")
 
 	// Test connection to non-existent server
@@ -543,6 +589,10 @@ func TestConnectionFailure(t *testing.T) {
 
 // TestSendResponse tests the sendResponse function
 func TestSendResponse(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove("paired.json")
 
 	mockServer := NewMockWebSocketServer()
@@ -595,6 +645,10 @@ func TestSendResponse(t *testing.T) {
 
 // TestStateMonitoring tests the state file monitoring functionality
 func TestStateMonitoring(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove("paired.json")
 
 	mockServer := NewMockWebSocketServer()
@@ -653,6 +707,10 @@ func TestStateMonitoring(t *testing.T) {
 
 // TestReconnectionLogic tests the reconnection logic in ConnectWebSocket
 func TestReconnectionLogic(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove("paired.json")
 
 	// Create config and state
@@ -718,6 +776,10 @@ func TestReconnectionLogic(t *testing.T) {
 
 // TestGlobalConnection tests the global connection functionality
 func TestGlobalConnection(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
 	defer os.Remove("paired.json")
 
 	// Initially no connection should exist
@@ -888,4 +950,87 @@ func TestDisconnectMessage(t *testing.T) {
 	if GetConnection() != nil {
 		t.Fatal("Expected nil connection after disconnect")
 	}
+}
+
+func TestHandleDeactivatedMessage(t *testing.T) {
+	// Set up temporary paths for testing
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+
+	// Create a temporary state file for testing
+	tempState := state.PairedState{
+		ServerWs: "ws://test.com/ws",
+		Token:    "test-token",
+	}
+
+	err := state.SaveState(tempState)
+	if err != nil {
+		t.Fatalf("Failed to save test state: %v", err)
+	}
+
+	// Ensure cleanup
+	defer func() {
+		if state.HasState() {
+			state.DeleteState()
+		}
+	}()
+
+	// Verify state exists before test
+	if !state.HasState() {
+		t.Fatal("State file should exist before deactivated message")
+	}
+
+	// Create mock server
+	mockServer := NewMockWebSocketServer()
+	defer mockServer.Close()
+
+	// Start client connection in a goroutine
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+		cfg := config.ClientConfig{
+			ClientID: "test-client",
+		}
+
+		// Replace the server URL with our mock server
+		serverURL := mockServer.GetURL()
+		ConnectWebSocket(cfg, serverURL, "test-token")
+	}()
+
+	// Wait for connection to be established
+	time.Sleep(200 * time.Millisecond)
+
+	// Send deactivated message from server
+	mockServer.mu.Lock()
+	for conn := range mockServer.connections {
+		deactivatedMsg := map[string]interface{}{
+			"type":    "deactivated",
+			"message": "Device not found in active device list. Please contact administrator.",
+		}
+		conn.WriteJSON(deactivatedMsg)
+		break
+	}
+	mockServer.mu.Unlock()
+
+	// Wait for message to be processed and connection to close
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify state file was deleted
+	if state.HasState() {
+		t.Fatal("State file should be deleted after deactivated message")
+	}
+
+	// Verify connection is cleared
+	if IsConnected() {
+		t.Fatal("Expected connection to be cleared after deactivated message")
+	}
+
+	if GetConnection() != nil {
+		t.Fatal("Expected nil connection after deactivated message")
+	}
+
+	// Wait for goroutine to finish
+	wg.Wait()
 }

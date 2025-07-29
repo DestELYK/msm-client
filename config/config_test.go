@@ -9,8 +9,11 @@ import (
 )
 
 func TestLoadOrCreateConfig(t *testing.T) {
-	// Clean up any existing config file
-	defer os.Remove(configFile)
+	// Set up temporary directory for testing
+	tempDir := t.TempDir()
+	originalPath := os.Getenv("MSC_CONFIG_PATH")
+	os.Setenv("MSC_CONFIG_PATH", tempDir)
+	defer os.Setenv("MSC_CONFIG_PATH", originalPath)
 
 	// Test creating new config
 	cfg, err := LoadOrCreateConfig()
@@ -25,7 +28,8 @@ func TestLoadOrCreateConfig(t *testing.T) {
 	}
 
 	// Verify config file was created
-	if _, err := os.Stat(configFile); os.IsNotExist(err) {
+	configPath := getConfigPath()
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		t.Fatal("Config file was not created")
 	}
 
@@ -41,7 +45,11 @@ func TestLoadOrCreateConfig(t *testing.T) {
 }
 
 func TestSaveConfig(t *testing.T) {
-	defer os.Remove(configFile)
+	// Set up temporary directory for testing
+	tempDir := t.TempDir()
+	originalPath := os.Getenv("MSC_CONFIG_PATH")
+	os.Setenv("MSC_CONFIG_PATH", tempDir)
+	defer os.Setenv("MSC_CONFIG_PATH", originalPath)
 
 	testConfig := ClientConfig{
 		ClientID:       "test-client-id",
@@ -55,7 +63,8 @@ func TestSaveConfig(t *testing.T) {
 	}
 
 	// Verify file exists and content is correct
-	data, err := os.ReadFile(configFile)
+	configPath := getConfigPath()
+	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("Failed to read config file: %v", err)
 	}
@@ -197,10 +206,15 @@ func TestLoadEnvFileNotExists(t *testing.T) {
 }
 
 func TestLoadConfigWithCorruptedFile(t *testing.T) {
-	defer os.Remove(configFile)
+	// Set up temporary directory for testing
+	tempDir := t.TempDir()
+	originalPath := os.Getenv("MSC_CONFIG_PATH")
+	os.Setenv("MSC_CONFIG_PATH", tempDir)
+	defer os.Setenv("MSC_CONFIG_PATH", originalPath)
 
 	// Create a corrupted JSON file
-	err := os.WriteFile(configFile, []byte("invalid json content"), 0644)
+	configPath := getConfigPath()
+	err := os.WriteFile(configPath, []byte("invalid json content"), 0644)
 	if err != nil {
 		t.Fatalf("Failed to create corrupted config file: %v", err)
 	}
