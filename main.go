@@ -49,16 +49,15 @@ func gracefulShutdown() {
 	// Disconnect WebSocket if connected
 	if ws.IsConnected() {
 		log.Println("Disconnecting WebSocket...")
-		conn := ws.GetConnection()
-		if conn != nil {
-			ws.DisconnectWebSocket(conn)
-		}
+		ws.ShutdownWebSocket()
 		time.Sleep(100 * time.Millisecond) // Allow time for disconnect message
 	}
 
 	// Stop pairing server
-	log.Println("Stopping pairing server...")
-	pairing.StopPairingServer()
+	if pairing.IsServerRunning() {
+		log.Println("Stopping pairing server...")
+		pairing.StopPairingServer()
+	}
 
 	log.Println("Shutdown complete")
 }
@@ -131,6 +130,13 @@ func main() {
 				shutdownMutex.Unlock()
 
 				ws.ConnectWebSocket(cfg, savedState.ServerWs, savedState.Token)
+
+				shutdownMutex.Lock()
+				if isShuttingDown {
+					shutdownMutex.Unlock()
+					break
+				}
+				shutdownMutex.Unlock()
 
 				// If ConnectWebSocket returns, it means the connection was lost
 				// and the state file was deleted (triggering restart)

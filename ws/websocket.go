@@ -22,6 +22,7 @@ var (
 	Headers    http.Header
 	mu         sync.RWMutex
 	connected  bool
+	shutdown   bool // Flag to prevent reconnection during shutdown
 	// TestMode prevents actual command execution during testing
 	TestMode bool
 	// Current client configuration
@@ -87,6 +88,27 @@ func IsConnected() bool {
 	return connected && Connection != nil
 }
 
+// SetShutdown sets the shutdown flag to prevent reconnection (thread-safe)
+func SetShutdown() {
+	mu.Lock()
+	defer mu.Unlock()
+	shutdown = true
+}
+
+// IsShutdown returns whether shutdown has been initiated (thread-safe)
+func IsShutdown() bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	return shutdown
+}
+
+// ResetShutdown clears the shutdown flag to allow reconnection (thread-safe)
+func ResetShutdown() {
+	mu.Lock()
+	defer mu.Unlock()
+	shutdown = false
+}
+
 // setConnection sets the global connection and headers (thread-safe)
 func setConnection(conn *websocket.Conn, headers http.Header) {
 	mu.Lock()
@@ -129,6 +151,12 @@ func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
 
 	backoff := time.Second
 	for {
+		// Check if shutdown has been initiated
+		if IsShutdown() {
+			log.Println("Shutdown initiated, stopping WebSocket connection attempts")
+			return
+		}
+
 		// Check if state file still exists before attempting connection
 		if !state.HasState() {
 			log.Println("State file no longer exists, stopping WebSocket connection")
@@ -199,7 +227,7 @@ func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
 					statusData := map[string]any{
 						"type":       MessageTypeStatus,
 						"clientId":   cfg.ClientID,
-						"uptime":     time.Now().Unix(),
+						"uptime":     utils.GetUptime(),
 						"interfaces": utils.GetNetworkInterfaces(),
 						"timestamp":  time.Now().Format(time.RFC3339),
 					}
@@ -253,6 +281,11 @@ func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
 		select {
 		case <-done:
 			clearConnection()
+			// Check if shutdown has been initiated before attempting reconnect
+			if IsShutdown() {
+				log.Println("WebSocket connection closed during shutdown, not reconnecting")
+				return
+			}
 			log.Println("WebSocket connection closed, attempting to reconnect...")
 		case <-stateDeleted:
 			clearConnection()
@@ -430,6 +463,9 @@ func DisconnectWebSocket(c *websocket.Conn) error {
 		log.Printf("Failed to send close message: %v", err)
 	}
 
+	// Wait for the close acknowledgment
+	time.Sleep(5 * time.Second)
+
 	err = c.Close()
 	if err != nil {
 		log.Printf("Failed to close WebSocket connection: %v", err)
@@ -440,4 +476,15 @@ func DisconnectWebSocket(c *websocket.Conn) error {
 
 	log.Println("WebSocket connection closed successfully")
 	return err
+}
+
+// ShutdownWebSocket gracefully disconnects and prevents reconnection
+func ShutdownWebSocket() error {
+	log.Println("Initiating WebSocket shutdown...")
+
+	// Set shutdown flag to prevent reconnection
+	SetShutdown()
+
+	// Disconnect the current connection
+	return DisconnectWebSocket(nil)
 }

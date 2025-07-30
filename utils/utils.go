@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"strconv"
@@ -255,4 +256,20 @@ func GetMacAddress(ip string) string {
 	}
 
 	return "00:00:00:00:00:00"
+}
+
+func GetUptime() int64 {
+	// Get the system uptime in seconds
+	uptime, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0 // Return 0 if we can't read uptime
+	}
+
+	// Parse the uptime value
+	var seconds float64
+	if _, err := fmt.Sscanf(string(uptime), "%f", &seconds); err != nil {
+		return 0 // Return 0 if parsing fails
+	}
+
+	return int64(seconds)
 }
