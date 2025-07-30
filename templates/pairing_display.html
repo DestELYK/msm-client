@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MediaScreen Manager - Device Pairing</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background: whitesmoke;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+      }
+      .container {
+        background: transparent;
+        border: 2px solid black;
+        border-radius: 20px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+        overflow: hidden;
+        width: 100%;
+        max-width: 500px;
+        margin: 0;
+        padding: 0;
+      }
+      .content {
+        background: white;
+        padding: 40px;
+        border-radius: 18px;
+        margin: 0;
+        text-align: center;
+      }
+      .header {
+        margin-bottom: 30px;
+      }
+      h1 {
+        color: #333;
+        margin: 0 0 10px 0;
+        font-size: 28px;
+        font-weight: 600;
+      }
+      .subtitle {
+        color: #666;
+        margin: 0;
+        font-size: 16px;
+      }
+      .pairing-section {
+        margin: 30px 0;
+        position: relative;
+      }
+      .pairing-section.expired::after {
+        content: "EXPIRED";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(220, 53, 69, 0.9);
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 24px;
+        font-weight: bold;
+        border-radius: 15px;
+        z-index: 10;
+        pointer-events: all;
+      }
+      .pairing-section.expired .pairing-code {
+        pointer-events: none;
+        cursor: default;
+      }
+      .pairing-section.expired .pairing-code:hover {
+        border-color: #ddd;
+        background: #f8f9fa;
+        transform: none;
+      }
+      .pairing-section.expired .pairing-code::after {
+        opacity: 0 !important;
+      }
+      .pairing-section.expired .qr-code:hover {
+        border-color: #ddd;
+        background: #f8f9fa;
+      }
+      .pairing-code {
+        font-size: 42px;
+        font-weight: bold;
+        color: #333;
+        margin: 20px 0;
+        letter-spacing: 6px;
+        font-family: "Courier New", monospace;
+        background: #f8f9fa;
+        padding: 20px;
+        border-radius: 15px;
+        border: 3px dashed #ddd;
+        transition: all 0.3s ease;
+        cursor: pointer;
+        user-select: none;
+        position: relative;
+      }
+      .pairing-code:hover {
+        border-color: #333;
+        background: #f5f5f5;
+      }
+      .pairing-code:active {
+        transform: scale(0.98);
+      }
+      .pairing-code::after {
+        content: "Click to copy";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.3);
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 16px;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        letter-spacing: normal;
+        font-weight: 600;
+        border-radius: 15px;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+        pointer-events: none;
+      }
+      .pairing-code:hover::after {
+        opacity: 1;
+      }
+      .pairing-code.copied::after {
+        content: "Copied";
+        background: rgba(40, 167, 69, 0.9);
+      }
+      .copy-feedback {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: #28a745;
+        color: white;
+        padding: 10px 20px;
+        border-radius: 5px;
+        font-size: 14px;
+        font-weight: 600;
+        z-index: 1000;
+        transform: translateX(100px);
+        opacity: 0;
+        transition: all 0.3s ease;
+      }
+      .copy-feedback.show {
+        transform: translateX(0);
+        opacity: 1;
+      }
+      .qr-code {
+        margin: 30px 0;
+        padding: 20px;
+        background: #f8f9fa;
+        border-radius: 15px;
+        border: 3px dashed #ddd;
+        transition: all 0.3s ease;
+      }
+      .qr-code img {
+        border-radius: 8px;
+        max-width: 100%;
+        height: auto;
+      }
+      .status-info {
+        display: flex;
+        justify-content: center;
+        margin-top: 25px;
+        padding-top: 20px;
+        border-top: 2px solid #ddd;
+        font-size: 16px;
+      }
+      .countdown {
+        color: #333;
+        font-weight: 600;
+      }
+      .countdown.warning {
+        color: #ff6b35;
+      }
+      .countdown.expired {
+        color: #dc3545;
+      }
+      .no-code {
+        padding: 40px 20px;
+        color: #666;
+      }
+      .no-code h3 {
+        color: #333;
+        margin-bottom: 15px;
+        font-weight: 600;
+      }
+      .alert {
+        background: #fff3cd;
+        color: #856404;
+        padding: 15px;
+        border-radius: 10px;
+        margin: 20px 0;
+        border: 2px solid #ffeaa7;
+        text-align: left;
+      }
+      .alert strong {
+        color: #333;
+      }
+      .btn {
+        background: #333;
+        color: white;
+        border: none;
+        padding: 12px 30px;
+        border-radius: 25px;
+        font-size: 16px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        font-weight: 600;
+        margin-top: 15px;
+      }
+      .btn:hover {
+        transform: translateY(-2px);
+        background: #555;
+      }
+    </style>
+    <script>
+      // Auto-refresh logic
+      var refreshTimer;
+
+      function startRefreshTimer(seconds) {
+        clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(function() {
+          location.reload();
+        }, seconds * 1000);
+      }
+
+      function stopRefresh() {
+        clearTimeout(refreshTimer);
+      }
+
+      // Countdown functionality
+      {{if .Code}}
+      var expiryTimeString = "{{.Expiry}}";
+      var hasCode = true;
+      var refreshScheduled = false; // Track if refresh has been scheduled
+
+      // Try to parse the date - handle different formats
+      var expiryTime;
+      try {
+        expiryTime = new Date(expiryTimeString).getTime();
+      } catch (e) {
+        expiryTime = Date.now() + (5 * 60 * 1000); // Fallback to 5 minutes from now
+      }
+
+      function updateCountdown() {
+        var now = new Date().getTime();
+        var timeLeft = expiryTime - now;
+        var countdownElement = document.getElementById('countdown');
+        var pairingSectionElement = document.querySelector('.pairing-section');
+
+        if (timeLeft > 0) {
+          var minutes = Math.floor(timeLeft / (1000 * 60));
+          var seconds = Math.floor((timeLeft % (1000 * 60)) / 1000);
+
+          var displayText = minutes + "m " + seconds + "s remaining";
+          countdownElement.textContent = displayText;
+
+          // Change color based on time remaining
+          countdownElement.className = 'countdown';
+          if (timeLeft < 60000) { // Less than 1 minute
+            countdownElement.classList.add('expired');
+          } else if (timeLeft < 120000) { // Less than 2 minutes
+            countdownElement.classList.add('warning');
+          }
+
+          // Remove expired overlay if time is still remaining
+          if (pairingSectionElement) {
+            pairingSectionElement.classList.remove('expired');
+          }
+
+          // Refresh every 10 seconds while code is active
+          if (!refreshScheduled) {
+            startRefreshTimer(10);
+            refreshScheduled = true;
+          }
+        } else {
+          countdownElement.textContent = "Code expired";
+          countdownElement.className = 'countdown expired';
+
+          // Add expired overlay
+          if (pairingSectionElement) {
+            pairingSectionElement.classList.add('expired');
+          }
+
+          // Refresh immediately when expired
+          if (!refreshScheduled) {
+            location.reload();
+          }
+        }
+      }
+
+      // Update countdown immediately and then every second
+      document.addEventListener('DOMContentLoaded', function() {
+        updateCountdown();
+        setInterval(updateCountdown, 1000);
+      });
+      {{else}}
+      var hasCode = false;
+
+      // No code - start refreshing every 5 seconds
+      document.addEventListener('DOMContentLoaded', function() {
+        startRefreshTimer(5);
+      });
+      {{end}}
+
+      // Copy to clipboard functionality
+      function copyToClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+          // Use modern clipboard API
+          navigator.clipboard.writeText(text).then(function() {
+            showCopyFeedback();
+          });
+        } else {
+          // Fallback for older browsers
+          var textArea = document.createElement("textarea");
+          textArea.value = text;
+          textArea.style.position = "fixed";
+          textArea.style.left = "-999999px";
+          textArea.style.top = "-999999px";
+          document.body.appendChild(textArea);
+          textArea.focus();
+          textArea.select();
+
+          try {
+            document.execCommand('copy');
+            showCopyFeedback();
+          } catch (err) {
+            console.error('Failed to copy: ', err);
+          } finally {
+            document.body.removeChild(textArea);
+          }
+        }
+      }
+
+      function showCopyFeedback() {
+        var pairingCodeElement = document.querySelector('.pairing-code');
+        if (pairingCodeElement) {
+          // Add copied class to change overlay text and color
+          pairingCodeElement.classList.add('copied');
+
+          // Remove the copied class after 1.5 seconds
+          setTimeout(function() {
+            pairingCodeElement.classList.remove('copied');
+          }, 1500);
+        }
+      }
+
+      // Add click event listener when DOM is loaded
+      document.addEventListener('DOMContentLoaded', function() {
+        var pairingCodeElement = document.querySelector('.pairing-code');
+        if (pairingCodeElement) {
+          pairingCodeElement.addEventListener('click', function() {
+            var code = this.textContent;
+            copyToClipboard(code);
+          });
+        }
+      });
+    </script>
+  </head>
+  <body>
+    <div class="container">
+      <div class="content">
+        <div class="header">
+          <h1>MediaScreen Manager</h1>
+          <p class="subtitle">Device Pairing</p>
+        </div>
+
+        {{if .Code}}
+        <div class="pairing-section">
+          <div class="pairing-code">{{.Code}}</div>
+
+          {{if .QRCodeImage}}
+          <div class="qr-code">
+            <img src="data:image/png;base64,{{.QRCodeImage}}" alt="Pairing QR Code" />
+          </div>
+          {{end}}
+
+          <div class="status-info">
+            <span class="countdown" id="countdown">Calculating...</span>
+          </div>
+        </div>
+        {{else}}
+        <div class="no-code">
+          <h3>Waiting for pairing code...</h3>
+          <p>No active pairing code found.</p>
+        </div>
+        <div class="alert">
+          <strong>To generate a pairing code:</strong><br />
+          Make a request to <code>/pair</code> endpoint or use the pairing interface.
+        </div>
+        {{end}}
+      </div>
+    </div>
+  </body>
+</html>

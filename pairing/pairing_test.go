@@ -65,7 +65,7 @@ func startTestServer(cfg config.ClientConfig, port int) {
 	time.Sleep(50 * time.Millisecond) // Allow cleanup to complete
 
 	go func() {
-		StartPairingServerOnPort(cfg, port)
+		StartPairingServerOnPort(cfg, port, false)
 	}()
 
 	// Give server time to start and wait for it to be ready
@@ -500,4 +500,407 @@ func TestStopPairingServerCallback(t *testing.T) {
 	// Note: The callback is only triggered when there's actually a server to stop
 	// So this tests the safe calling of StopPairingServer
 	_ = stopped // Acknowledge variable (callback won't be triggered without actual server)
+}
+
+// Test IP-based security features
+func TestIPBasedSecurity(t *testing.T) {
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+	defer cleanupTest()
+
+	os.Setenv("MSM_SECRET_KEY", "test-secret-key")
+	defer os.Unsetenv("MSM_SECRET_KEY")
+
+	cfg := config.ClientConfig{
+		ClientID: "test-ip-security",
+	}
+
+	port, err := findAvailablePort()
+	if err != nil {
+		t.Fatalf("Failed to find available port: %v", err)
+	}
+
+	startTestServer(cfg, port)
+	defer StopPairingServer()
+
+	baseURL := fmt.Sprintf("http://localhost:%d", port)
+
+	t.Run("IPMismatchViolation", func(t *testing.T) {
+		// First, generate a pairing code from one IP (simulated)
+		client1 := &http.Client{}
+		req, _ := http.NewRequest("POST", baseURL+"/pair", nil)
+		req.Header.Set("X-Forwarded-For", "192.168.1.100")
+
+		resp, err := client1.Do(req)
+		if err != nil {
+			t.Fatalf("Failed to request pairing: %v", err)
+		}
+		resp.Body.Close()
+
+		// Get the generated code
+		pairingCode, _ := GetPairingCode()
+		if pairingCode == "" {
+			t.Fatal("Pairing code should be generated")
+		}
+
+		// Try to confirm from a different IP
+		confirmReq := map[string]string{
+			"code":     pairingCode,
+			"serverWs": "ws://test.example.com/ws",
+		}
+		confirmBody, _ := json.Marshal(confirmReq)
+
+		req2, _ := http.NewRequest("POST", baseURL+"/pair/confirm", bytes.NewReader(confirmBody))
+		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("X-Forwarded-For", "192.168.1.200") // Different IP
+
+		resp2, err := client1.Do(req2)
+		if err != nil {
+			t.Fatalf("Failed to send confirm request: %v", err)
+		}
+		defer resp2.Body.Close()
+
+		// Should be forbidden due to IP mismatch
+		if resp2.StatusCode != http.StatusForbidden {
+			t.Errorf("Expected status 403 for IP mismatch, got %d", resp2.StatusCode)
+		}
+
+		// Check that violation was recorded
+		violations := ipViolations["192.168.1.200"]
+		if violations != 1 {
+			t.Errorf("Expected 1 violation for IP 192.168.1.200, got %d", violations)
+		}
+	})
+
+	t.Run("IPBlacklisting", func(t *testing.T) {
+		// Clear any existing state
+		ClearBlacklist()
+		ResetPairing()
+
+		maliciousIP := "10.0.0.50"
+
+		// Generate violations to trigger blacklisting
+		for i := 0; i < maxIPViolations; i++ {
+			// Generate a new pairing code first
+			req, _ := http.NewRequest("POST", baseURL+"/pair", nil)
+			req.Header.Set("X-Forwarded-For", "192.168.1.100") // Legitimate IP
+
+			client := &http.Client{}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("Failed to request pairing: %v", err)
+			}
+			resp.Body.Close()
+
+			pairingCode, _ := GetPairingCode()
+
+			// Try to confirm from malicious IP
+			confirmReq := map[string]string{
+				"code":     pairingCode,
+				"serverWs": "ws://test.example.com/ws",
+			}
+			confirmBody, _ := json.Marshal(confirmReq)
+
+			req2, _ := http.NewRequest("POST", baseURL+"/pair/confirm", bytes.NewReader(confirmBody))
+			req2.Header.Set("Content-Type", "application/json")
+			req2.Header.Set("X-Forwarded-For", maliciousIP)
+
+			resp2, err := client.Do(req2)
+			if err != nil {
+				t.Fatalf("Failed to send confirm request: %v", err)
+			}
+			resp2.Body.Close()
+
+			// Reset pairing for next attempt
+			ResetPairing()
+		}
+
+		// Now the IP should be blacklisted
+		if !isIPBlacklisted(maliciousIP) {
+			t.Errorf("IP %s should be blacklisted after %d violations", maliciousIP, maxIPViolations)
+		}
+
+		// Try to generate a pairing code from blacklisted IP
+		req, _ := http.NewRequest("POST", baseURL+"/pair", nil)
+		req.Header.Set("X-Forwarded-For", maliciousIP)
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("Failed to request pairing: %v", err)
+		}
+		defer resp.Body.Close()
+
+		// Should be forbidden
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("Expected status 403 for blacklisted IP, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("BlacklistManagement", func(t *testing.T) {
+		// Test blacklist status retrieval
+		testIP := "192.168.1.250"
+		ipBlacklist[testIP] = time.Now().Add(1 * time.Hour)
+
+		status := GetBlacklistStatus()
+		if _, exists := status[testIP]; !exists {
+			t.Error("Expected blacklisted IP to appear in status")
+		}
+
+		// Test blacklist clearing
+		ClearBlacklist()
+		status = GetBlacklistStatus()
+		if len(status) != 0 {
+			t.Error("Expected empty blacklist after clearing")
+		}
+	})
+}
+
+func TestPreventDuplicateCodes(t *testing.T) {
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+	defer cleanupTest()
+
+	os.Setenv("MSM_SECRET_KEY", "test-secret-key")
+	defer os.Unsetenv("MSM_SECRET_KEY")
+
+	cfg := config.ClientConfig{
+		ClientID: "test-duplicate-prevention",
+	}
+
+	port, err := findAvailablePort()
+	if err != nil {
+		t.Fatalf("Failed to find available port: %v", err)
+	}
+
+	startTestServer(cfg, port)
+	defer StopPairingServer()
+
+	baseURL := fmt.Sprintf("http://localhost:%d", port)
+
+	t.Run("PreventDuplicateCodeGeneration", func(t *testing.T) {
+		// Generate first pairing code
+		resp1, err := http.Post(baseURL+"/pair", "application/json", nil)
+		if err != nil {
+			t.Fatalf("Failed to request first pairing: %v", err)
+		}
+		defer resp1.Body.Close()
+
+		var response1 map[string]interface{}
+		json.NewDecoder(resp1.Body).Decode(&response1)
+
+		firstCode, _ := GetPairingCode()
+		if firstCode == "" {
+			t.Fatal("First pairing code should be generated")
+		}
+
+		// Try to generate another code immediately
+		resp2, err := http.Post(baseURL+"/pair", "application/json", nil)
+		if err != nil {
+			t.Fatalf("Failed to request second pairing: %v", err)
+		}
+		defer resp2.Body.Close()
+
+		var response2 map[string]interface{}
+		json.NewDecoder(resp2.Body).Decode(&response2)
+
+		secondCode, _ := GetPairingCode()
+
+		// Should be the same code
+		if firstCode != secondCode {
+			t.Errorf("Expected same code, got first: %s, second: %s", firstCode, secondCode)
+		}
+
+		// Response message should indicate existing code
+		message2, ok := response2["message"].(string)
+		if !ok {
+			t.Fatal("Expected message in response")
+		}
+
+		if message2 != "Pairing code already active, please check device for code." {
+			t.Errorf("Expected 'already active' message, got: %s", message2)
+		}
+	})
+
+	t.Run("AllowNewCodeAfterExpiry", func(t *testing.T) {
+		// Reset state
+		ResetPairing()
+
+		// Generate a code
+		resp1, err := http.Post(baseURL+"/pair", "application/json", nil)
+		if err != nil {
+			t.Fatalf("Failed to request pairing: %v", err)
+		}
+		resp1.Body.Close()
+
+		firstCode, _ := GetPairingCode()
+		if firstCode == "" {
+			t.Fatal("Pairing code should be generated")
+		}
+
+		// Manually expire the code by setting expiry to past
+		codeMutex.Lock()
+		expiry = time.Now().Add(-1 * time.Minute)
+		codeMutex.Unlock()
+
+		// Now request a new code
+		resp2, err := http.Post(baseURL+"/pair", "application/json", nil)
+		if err != nil {
+			t.Fatalf("Failed to request second pairing: %v", err)
+		}
+		defer resp2.Body.Close()
+
+		var response2 map[string]interface{}
+		json.NewDecoder(resp2.Body).Decode(&response2)
+
+		secondCode, _ := GetPairingCode()
+
+		// Should be a new code
+		if firstCode == secondCode {
+			t.Errorf("Expected different code after expiry, but got same: %s", firstCode)
+		}
+
+		// Response message should indicate new code generated
+		message2, ok := response2["message"].(string)
+		if !ok {
+			t.Fatal("Expected message in response")
+		}
+
+		if message2 != "Pairing code generated, please check device for code." {
+			t.Errorf("Expected 'generated' message, got: %s", message2)
+		}
+	})
+}
+
+func TestReducedExpiryTime(t *testing.T) {
+	cleanup := setupTestPaths(t)
+	defer cleanup()
+	defer cleanupTest()
+
+	os.Setenv("MSM_SECRET_KEY", "test-secret-key")
+	defer os.Unsetenv("MSM_SECRET_KEY")
+
+	cfg := config.ClientConfig{
+		ClientID: "test-expiry-time",
+	}
+
+	port, err := findAvailablePort()
+	if err != nil {
+		t.Fatalf("Failed to find available port: %v", err)
+	}
+
+	startTestServer(cfg, port)
+	defer StopPairingServer()
+
+	baseURL := fmt.Sprintf("http://localhost:%d", port)
+
+	t.Run("OneMinuteExpiry", func(t *testing.T) {
+		// Generate pairing code
+		resp, err := http.Post(baseURL+"/pair", "application/json", nil)
+		if err != nil {
+			t.Fatalf("Failed to request pairing: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var response map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&response)
+
+		// Check expiry time in response
+		expiryStr, ok := response["expiry"].(string)
+		if !ok {
+			t.Fatal("Expected expiry in response")
+		}
+
+		expiryTime, err := time.Parse(time.RFC3339, expiryStr)
+		if err != nil {
+			t.Fatalf("Failed to parse expiry time: %v", err)
+		}
+
+		// Should expire in approximately 1 minute (with some tolerance)
+		now := time.Now()
+		expectedExpiry := now.Add(1 * time.Minute)
+		tolerance := 5 * time.Second
+
+		if expiryTime.Before(expectedExpiry.Add(-tolerance)) || expiryTime.After(expectedExpiry.Add(tolerance)) {
+			t.Errorf("Expected expiry around %v, got %v", expectedExpiry, expiryTime)
+		}
+
+		// Verify the constant is set correctly
+		if pairingCodeExpiry != 1*time.Minute {
+			t.Errorf("Expected pairingCodeExpiry to be 1 minute, got %v", pairingCodeExpiry)
+		}
+	})
+}
+
+func TestIPHelperFunctions(t *testing.T) {
+	t.Run("GetClientIPFromHeaders", func(t *testing.T) {
+		// Test X-Forwarded-For header
+		req1, _ := http.NewRequest("GET", "/test", nil)
+		req1.Header.Set("X-Forwarded-For", "192.168.1.100, 10.0.0.1")
+		req1.RemoteAddr = "127.0.0.1:12345"
+
+		ip1 := getClientIP(req1)
+		if ip1 != "192.168.1.100" {
+			t.Errorf("Expected IP 192.168.1.100 from X-Forwarded-For, got %s", ip1)
+		}
+
+		// Test X-Real-IP header
+		req2, _ := http.NewRequest("GET", "/test", nil)
+		req2.Header.Set("X-Real-IP", "203.0.113.1")
+		req2.RemoteAddr = "127.0.0.1:12345"
+
+		ip2 := getClientIP(req2)
+		if ip2 != "203.0.113.1" {
+			t.Errorf("Expected IP 203.0.113.1 from X-Real-IP, got %s", ip2)
+		}
+
+		// Test fallback to RemoteAddr
+		req3, _ := http.NewRequest("GET", "/test", nil)
+		req3.RemoteAddr = "198.51.100.1:54321"
+
+		ip3 := getClientIP(req3)
+		if ip3 != "198.51.100.1" {
+			t.Errorf("Expected IP 198.51.100.1 from RemoteAddr, got %s", ip3)
+		}
+	})
+
+	t.Run("BlacklistCleanup", func(t *testing.T) {
+		// Clear existing state
+		ClearBlacklist()
+
+		// Add some test entries
+		expiredIP := "192.168.1.100"
+		activeIP := "192.168.1.200"
+
+		blacklistMutex.Lock()
+		ipBlacklist[expiredIP] = time.Now().Add(-1 * time.Hour) // Expired
+		ipBlacklist[activeIP] = time.Now().Add(1 * time.Hour)   // Active
+		ipViolations[expiredIP] = 3
+		ipViolations[activeIP] = 2
+		blacklistMutex.Unlock()
+
+		// Run cleanup
+		cleanupBlacklist()
+
+		// Check results
+		blacklistMutex.Lock()
+		_, expiredExists := ipBlacklist[expiredIP]
+		_, activeExists := ipBlacklist[activeIP]
+		expiredViolations := ipViolations[expiredIP]
+		activeViolations := ipViolations[activeIP]
+		blacklistMutex.Unlock()
+
+		if expiredExists {
+			t.Error("Expired IP should be removed from blacklist")
+		}
+		if !activeExists {
+			t.Error("Active IP should remain in blacklist")
+		}
+		if expiredViolations != 0 {
+			t.Errorf("Expired IP violations should be reset, got %d", expiredViolations)
+		}
+		if activeViolations != 2 {
+			t.Errorf("Active IP violations should remain, expected 2, got %d", activeViolations)
+		}
+	})
 }

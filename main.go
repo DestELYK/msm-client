@@ -70,6 +70,10 @@ func main() {
 		Required: false,
 		Help:     "Disable execution of remote commands (reboot, etc.) for security",
 	})
+	enableDisplayFlag := startCmd.Flag("", "enable-display", &argparse.Options{
+		Required: false,
+		Help:     "Enable pairing display server at /display endpoint",
+	})
 
 	// Pairing command
 	pairingCmd := parser.NewCommand("pairing", "Pairing operations")
@@ -170,7 +174,10 @@ func main() {
 			}
 			shutdownMutex.Unlock()
 
-			pairing.StartPairingServer(cfg)
+			if *enableDisplayFlag {
+				log.Println("Pairing display enabled - web interface available at /display")
+			}
+			pairing.StartPairingServerWithDisplay(cfg, *enableDisplayFlag)
 
 			// After pairing server stops, check if we now have saved state
 			// This happens when pairing was successful
