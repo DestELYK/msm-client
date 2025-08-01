@@ -17,10 +17,14 @@ import (
 	"github.com/akamensky/argparse"
 )
 
+const DEFAULT_PAIRING_PORT = 49174 // Default port for pairing server
+
 // Global variables for graceful shutdown
 var (
 	shutdownMutex  sync.Mutex
 	isShuttingDown bool
+	wsm            = ws.NewWebSocketManager()    // WebSocket manager instance
+	pm             = pairing.NewPairingManager() // Pairing manager instance
 )
 
 // setupSignalHandler sets up graceful shutdown on interrupt signals
@@ -47,16 +51,16 @@ func gracefulShutdown() {
 	log.Println("Graceful shutdown initiated...")
 
 	// Disconnect WebSocket if connected
-	if ws.IsConnected() {
+	if wsm.IsConnected() {
 		log.Println("Disconnecting WebSocket...")
-		ws.ShutdownWebSocket()
+		wsm.ShutdownWebSocket(true)
 		time.Sleep(100 * time.Millisecond) // Allow time for disconnect message
 	}
 
 	// Stop pairing server
-	if pairing.IsServerRunning() {
+	if pm.IsServerRunning() {
 		log.Println("Stopping pairing server...")
-		pairing.StopPairingServer()
+		pm.StopPairingServer()
 	}
 
 	log.Println("Shutdown complete")
@@ -73,6 +77,11 @@ func main() {
 	enableDisplayFlag := startCmd.Flag("", "enable-display", &argparse.Options{
 		Required: false,
 		Help:     "Enable pairing display server at /display endpoint",
+	})
+	pairingPortFlag := startCmd.Int("", "pairing-port", &argparse.Options{
+		Required: false,
+		Default:  DEFAULT_PAIRING_PORT,
+		Help:     "Specify the port for the pairing server (default is 47174)",
 	})
 
 	// Pairing command
@@ -133,7 +142,7 @@ func main() {
 				}
 				shutdownMutex.Unlock()
 
-				ws.ConnectWebSocket(cfg, savedState.ServerWs, savedState.Token)
+				wsm.ConnectWebSocket(cfg, savedState.ServerWs)
 
 				shutdownMutex.Lock()
 				if isShuttingDown {
@@ -177,14 +186,14 @@ func main() {
 			if *enableDisplayFlag {
 				log.Println("Pairing display enabled - web interface available at /display")
 			}
-			pairing.StartPairingServerWithDisplay(cfg, *enableDisplayFlag)
+			pm.StartPairingServerOnPort(cfg, *pairingPortFlag, *enableDisplayFlag)
 
 			// After pairing server stops, check if we now have saved state
 			// This happens when pairing was successful
 			pairedState, stateErr := state.LoadState()
 			if stateErr == nil {
 				log.Printf("Pairing completed! Connecting to %s", pairedState.ServerWs)
-				ws.ConnectWebSocket(cfg, pairedState.ServerWs, pairedState.Token)
+				wsm.ConnectWebSocket(cfg, pairedState.ServerWs)
 				// If we get here, the WebSocket connection ended and might need to restart pairing
 				continue
 			} else {
@@ -199,11 +208,11 @@ func main() {
 		if getCmd.Happened() {
 			if *getWatchFlag {
 				fmt.Println("Watching for pairing code changes...")
-				pairing.WatchPairingCode(5 * time.Second)
+				pm.WatchPairingCode(5 * time.Second)
 				return
 			}
 
-			code, expiry := pairing.GetPairingCode()
+			code, expiry := pm.GetPairingCode()
 			if code == "" {
 				fmt.Println("No pairing code available or it has expired.")
 				return
@@ -218,7 +227,7 @@ func main() {
 				return
 			}
 
-			pairingCodeErr := pairing.DeletePairingCode()
+			pairingCodeErr := pm.DeletePairingCode()
 			if pairingCodeErr != nil {
 				log.Fatalf("Failed to reset pairing: %v", pairingCodeErr)
 			}

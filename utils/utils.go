@@ -1,7 +1,9 @@
 package utils
 
 import (
+	"crypto/rand"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strconv"
@@ -272,4 +274,27 @@ func GetUptime() int64 {
 	}
 
 	return int64(seconds)
+}
+
+// GenerateCode generates a random pairing code
+func GenerateCode(codeLength int) string {
+	const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, codeLength)
+
+	// Generate random bytes in one call
+	randomBytes := make([]byte, codeLength)
+	if _, err := rand.Read(randomBytes); err != nil {
+		// Fallback to less secure method if crypto/rand fails
+		log.Printf("Warning: crypto/rand failed, using fallback: %v", err)
+		for i := range b {
+			b[i] = letters[i%len(letters)] // Very basic fallback
+		}
+		return string(b)
+	}
+
+	// Use random bytes to select from letters
+	for i := range b {
+		b[i] = letters[int(randomBytes[i])%len(letters)]
+	}
+	return string(b)
 }

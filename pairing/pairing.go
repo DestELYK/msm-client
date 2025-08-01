@@ -2,12 +2,9 @@ package pairing
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"log"
-	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -19,12 +16,10 @@ import (
 	"msm-client/config"
 	"msm-client/state"
 	"msm-client/utils"
-
-	"github.com/golang-jwt/jwt/v5"
-	qrcode "github.com/skip2/go-qrcode"
 )
 
-var (
+// PairingManager handles all pairing operations
+type PairingManager struct {
 	// Pairing code management
 	pairCode   string
 	expiry     time.Time
@@ -48,30 +43,37 @@ var (
 	globalConfig config.ClientConfig
 	configMutex  sync.RWMutex
 
-	// Test mode
-	TestMode bool
-
 	// Callback functions for external use
 	onPairingStarted func(code string, expiry time.Time)
-	onPairingSuccess func(serverWs, token string)
+	onPairingSuccess func(serverWs string)
 	onPairingFailed  func(reason string, failCount int)
 	onServerStarted  func(addr string)
 	onServerStopped  func()
 	callbackMutex    sync.RWMutex
-)
 
-const DEFAULT_PATH = "/var/lib/msm-client" // Default path for pairing file
-const pairingCodeFile = "pairing_code.txt"
-const maxFailCount = 3
+	// Display manager
+	display *PairingDisplay
+}
+
+const DEFAULT_PATH = "/var/lib/msm-client"   // Default path for pairing file
+const PAIRING_CODE_FILE = "pairing_code.txt" // File name for pairing code
+const MAX_FAIL_COUNT = 3                     // Max pairing attempts before invalidating code
 
 // IP security constants
-const maxIPViolations = 3                 // Max IP violations before blacklisting
-const ipBlacklistDuration = 1 * time.Hour // How long to blacklist an IP
+const MAX_IP_VIOLATIONS = 3                 // Max IP violations before blacklisting
+const IP_BLACKLIST_DURATION = 1 * time.Hour // How long to blacklist an IP
 
-func init() {
-	// Initialize IP tracking maps
-	ipBlacklist = make(map[string]time.Time)
-	ipViolations = make(map[string]int)
+// NewPairingManager creates a new PairingManager instance
+func NewPairingManager() *PairingManager {
+	pm := &PairingManager{
+		ipBlacklist:  make(map[string]time.Time),
+		ipViolations: make(map[string]int),
+	}
+
+	// Initialize the display manager
+	pm.display = NewPairingDisplay(pm)
+
+	return pm
 }
 
 // getClientIP extracts the real client IP from the HTTP request
@@ -106,35 +108,35 @@ func getClientIP(r *http.Request) string {
 }
 
 // isIPBlacklisted checks if an IP is currently blacklisted
-func isIPBlacklisted(ip string) bool {
-	blacklistMutex.Lock()
-	defer blacklistMutex.Unlock()
+func (pm *PairingManager) isIPBlacklisted(ip string) bool {
+	pm.blacklistMutex.Lock()
+	defer pm.blacklistMutex.Unlock()
 
-	if expiry, exists := ipBlacklist[ip]; exists {
+	if expiry, exists := pm.ipBlacklist[ip]; exists {
 		if time.Now().Before(expiry) {
 			return true
 		}
 		// Clean up expired blacklist entry
-		delete(ipBlacklist, ip)
+		delete(pm.ipBlacklist, ip)
 	}
 	return false
 }
 
 // recordIPViolation records a violation for an IP and blacklists if necessary
-func recordIPViolation(ip string) bool {
-	blacklistMutex.Lock()
-	defer blacklistMutex.Unlock()
+func (pm *PairingManager) recordIPViolation(ip string) bool {
+	pm.blacklistMutex.Lock()
+	defer pm.blacklistMutex.Unlock()
 
 	// Increment violation count
-	ipViolations[ip]++
-	violations := ipViolations[ip]
+	pm.ipViolations[ip]++
+	violations := pm.ipViolations[ip]
 
-	log.Printf("IP violation recorded for %s: %d/%d violations", ip, violations, maxIPViolations)
+	log.Printf("IP violation recorded for %s: %d/%d violations", ip, violations, MAX_IP_VIOLATIONS)
 
 	// Blacklist if max violations reached
-	if violations >= maxIPViolations {
-		ipBlacklist[ip] = time.Now().Add(ipBlacklistDuration)
-		log.Printf("IP %s blacklisted for %v due to %d violations", ip, ipBlacklistDuration, violations)
+	if violations >= MAX_IP_VIOLATIONS {
+		pm.ipBlacklist[ip] = time.Now().Add(IP_BLACKLIST_DURATION)
+		log.Printf("IP %s blacklisted for %v due to %d violations", ip, IP_BLACKLIST_DURATION, violations)
 		return true
 	}
 
@@ -142,15 +144,15 @@ func recordIPViolation(ip string) bool {
 }
 
 // cleanupBlacklist removes expired blacklist entries
-func cleanupBlacklist() {
-	blacklistMutex.Lock()
-	defer blacklistMutex.Unlock()
+func (pm *PairingManager) cleanupBlacklist() {
+	pm.blacklistMutex.Lock()
+	defer pm.blacklistMutex.Unlock()
 
 	now := time.Now()
-	for ip, expiry := range ipBlacklist {
+	for ip, expiry := range pm.ipBlacklist {
 		if now.After(expiry) {
-			delete(ipBlacklist, ip)
-			delete(ipViolations, ip) // Also reset violation count
+			delete(pm.ipBlacklist, ip)
+			delete(pm.ipViolations, ip) // Also reset violation count
 			log.Printf("Removed expired blacklist entry for IP %s", ip)
 		}
 	}
@@ -159,213 +161,173 @@ func cleanupBlacklist() {
 // getPairingPath returns the path for the pairing code file based on environment variable or default
 func getPairingPath() string {
 	if path := os.Getenv("MSC_PAIRING_PATH"); path != "" {
-		return filepath.Join(path, pairingCodeFile)
+		return filepath.Join(path, PAIRING_CODE_FILE)
 	}
-	return filepath.Join(DEFAULT_PATH, pairingCodeFile)
+	return filepath.Join(DEFAULT_PATH, PAIRING_CODE_FILE)
 }
 
 const pairingCodeCleanupInterval = 5 * time.Second
 const pairingCodeExpiry = 1 * time.Minute
 const pairingCodeLength = 6
 
-// getTemplatePath returns the path to the pairing display template
-func getTemplatePath() string {
-	// Check if custom template path is set via environment variable
-	if customPath := os.Getenv("MSC_TEMPLATE_PATH"); customPath != "" {
-		templatePath := filepath.Join(customPath, "pairing_display.html")
-		log.Printf("Using custom template path: %s", templatePath)
-		return templatePath
-	}
-
-	// Default to templates directory relative to executable
-	execDir, err := os.Executable()
-	if err == nil {
-		templatePath := filepath.Join(filepath.Dir(execDir), "templates", "pairing_display.html")
-		if _, err := os.Stat(templatePath); err == nil {
-			return templatePath
-		}
-	}
-
-	// Fallback to current working directory
-	templatePath := filepath.Join("templates", "pairing_display.html")
-	log.Printf("Using fallback template path: %s", templatePath)
-	return templatePath
-}
-
-// Global server management functions
-
 // IsServerRunning returns whether the pairing server is currently running
-func IsServerRunning() bool {
-	serverMutex.RLock()
-	defer serverMutex.RUnlock()
-	return serverRunning && pairServer != nil
+func (pm *PairingManager) IsServerRunning() bool {
+	pm.serverMutex.RLock()
+	defer pm.serverMutex.RUnlock()
+	return pm.serverRunning && pm.pairServer != nil
 }
 
 // GetServer returns the current pairing server instance
-func GetServer() *http.Server {
-	serverMutex.RLock()
-	defer serverMutex.RUnlock()
-	return pairServer
+func (pm *PairingManager) GetServer() *http.Server {
+	pm.serverMutex.RLock()
+	defer pm.serverMutex.RUnlock()
+	return pm.pairServer
 }
 
 // SetConfig sets the global configuration for pairing operations
-func SetConfig(cfg config.ClientConfig) {
-	configMutex.Lock()
-	defer configMutex.Unlock()
-	globalConfig = cfg
+func (pm *PairingManager) SetConfig(cfg config.ClientConfig) {
+	pm.configMutex.Lock()
+	defer pm.configMutex.Unlock()
+	pm.globalConfig = cfg
 }
 
 // GetConfig returns the current global configuration
-func GetConfig() config.ClientConfig {
-	configMutex.RLock()
-	defer configMutex.RUnlock()
-	return globalConfig
+func (pm *PairingManager) GetConfig() config.ClientConfig {
+	pm.configMutex.RLock()
+	defer pm.configMutex.RUnlock()
+	return pm.globalConfig
 }
 
 // setServer sets the pairing server instance (internal use)
-func setServer(server *http.Server) {
-	serverMutex.Lock()
-	defer serverMutex.Unlock()
-	pairServer = server
-	serverRunning = (server != nil)
+func (pm *PairingManager) setServer(server *http.Server) {
+	pm.serverMutex.Lock()
+	defer pm.serverMutex.Unlock()
+	pm.pairServer = server
+	pm.serverRunning = (server != nil)
 }
 
 // clearServer clears the pairing server instance (internal use)
-func clearServer() {
-	serverMutex.Lock()
-	defer serverMutex.Unlock()
-	pairServer = nil
-	serverRunning = false
+func (pm *PairingManager) clearServer() {
+	pm.serverMutex.Lock()
+	defer pm.serverMutex.Unlock()
+	pm.pairServer = nil
+	pm.serverRunning = false
 }
 
 // Callback management functions
 
 // SetOnPairingStarted sets a callback for when pairing code is generated
-func SetOnPairingStarted(callback func(code string, expiry time.Time)) {
-	callbackMutex.Lock()
-	defer callbackMutex.Unlock()
-	onPairingStarted = callback
+func (pm *PairingManager) SetOnPairingStarted(callback func(code string, expiry time.Time)) {
+	pm.callbackMutex.Lock()
+	defer pm.callbackMutex.Unlock()
+	pm.onPairingStarted = callback
 }
 
 // SetOnPairingSuccess sets a callback for successful pairing
-func SetOnPairingSuccess(callback func(serverWs, token string)) {
-	callbackMutex.Lock()
-	defer callbackMutex.Unlock()
-	onPairingSuccess = callback
+func (pm *PairingManager) SetOnPairingSuccess(callback func(serverWs string)) {
+	pm.callbackMutex.Lock()
+	defer pm.callbackMutex.Unlock()
+	pm.onPairingSuccess = callback
 }
 
 // SetOnPairingFailed sets a callback for failed pairing attempts
-func SetOnPairingFailed(callback func(reason string, failCount int)) {
-	callbackMutex.Lock()
-	defer callbackMutex.Unlock()
-	onPairingFailed = callback
+func (pm *PairingManager) SetOnPairingFailed(callback func(reason string, failCount int)) {
+	pm.callbackMutex.Lock()
+	defer pm.callbackMutex.Unlock()
+	pm.onPairingFailed = callback
 }
 
 // SetOnServerStarted sets a callback for when the server starts
-func SetOnServerStarted(callback func(addr string)) {
-	callbackMutex.Lock()
-	defer callbackMutex.Unlock()
-	onServerStarted = callback
+func (pm *PairingManager) SetOnServerStarted(callback func(addr string)) {
+	pm.callbackMutex.Lock()
+	defer pm.callbackMutex.Unlock()
+	pm.onServerStarted = callback
 }
 
 // SetOnServerStopped sets a callback for when the server stops
-func SetOnServerStopped(callback func()) {
-	callbackMutex.Lock()
-	defer callbackMutex.Unlock()
-	onServerStopped = callback
+func (pm *PairingManager) SetOnServerStopped(callback func()) {
+	pm.callbackMutex.Lock()
+	defer pm.callbackMutex.Unlock()
+	pm.onServerStopped = callback
 }
 
 // ClearAllCallbacks clears all callback functions
-func ClearAllCallbacks() {
-	callbackMutex.Lock()
-	defer callbackMutex.Unlock()
-	onPairingStarted = nil
-	onPairingSuccess = nil
-	onPairingFailed = nil
-	onServerStarted = nil
-	onServerStopped = nil
+func (pm *PairingManager) ClearAllCallbacks() {
+	pm.callbackMutex.Lock()
+	defer pm.callbackMutex.Unlock()
+	pm.onPairingStarted = nil
+	pm.onPairingSuccess = nil
+	pm.onPairingFailed = nil
+	pm.onServerStarted = nil
+	pm.onServerStopped = nil
 }
 
 // triggerCallback safely calls a callback function
-func triggerOnPairingStarted(code string, expiry time.Time) {
-	callbackMutex.RLock()
-	callback := onPairingStarted
-	callbackMutex.RUnlock()
+func (pm *PairingManager) triggerOnPairingStarted(code string, expiry time.Time) {
+	pm.callbackMutex.RLock()
+	callback := pm.onPairingStarted
+	pm.callbackMutex.RUnlock()
 	if callback != nil {
 		callback(code, expiry)
 	}
 }
 
-func triggerOnPairingSuccess(serverWs, token string) {
-	callbackMutex.RLock()
-	callback := onPairingSuccess
-	callbackMutex.RUnlock()
+func (pm *PairingManager) triggerOnPairingSuccess(serverWs string) {
+	pm.callbackMutex.RLock()
+	callback := pm.onPairingSuccess
+	pm.callbackMutex.RUnlock()
 	if callback != nil {
-		callback(serverWs, token)
+		callback(serverWs)
 	}
 }
 
-func triggerOnPairingFailed(reason string, failCount int) {
-	callbackMutex.RLock()
-	callback := onPairingFailed
-	callbackMutex.RUnlock()
+func (pm *PairingManager) triggerOnPairingFailed(reason string, failCount int) {
+	pm.callbackMutex.RLock()
+	callback := pm.onPairingFailed
+	pm.callbackMutex.RUnlock()
 	if callback != nil {
 		callback(reason, failCount)
 	}
 }
 
-func triggerOnServerStarted(addr string) {
-	callbackMutex.RLock()
-	callback := onServerStarted
-	callbackMutex.RUnlock()
+func (pm *PairingManager) triggerOnServerStarted(addr string) {
+	pm.callbackMutex.RLock()
+	callback := pm.onServerStarted
+	pm.callbackMutex.RUnlock()
 	if callback != nil {
 		callback(addr)
 	}
 }
 
-func triggerOnServerStopped() {
-	callbackMutex.RLock()
-	callback := onServerStopped
-	callbackMutex.RUnlock()
+func (pm *PairingManager) triggerOnServerStopped() {
+	pm.callbackMutex.RLock()
+	callback := pm.onServerStopped
+	pm.callbackMutex.RUnlock()
 	if callback != nil {
 		callback()
 	}
 }
 
-func StartPairingServer(cfg config.ClientConfig) {
-	StartPairingServerOnPort(cfg, 49174, false)
-}
-
-func StartPairingServerWithDisplay(cfg config.ClientConfig, enableDisplay bool) {
-	StartPairingServerOnPort(cfg, 49174, enableDisplay)
-}
-
-// StartPairingServerOnPort starts the pairing server on a specific port (for testing)
-func StartPairingServerOnPort(cfg config.ClientConfig, port int, enableDisplay bool) {
+// StartPairingServerOnPort starts the pairing server on a specific port using the manager
+func (pm *PairingManager) StartPairingServerOnPort(cfg config.ClientConfig, port int, enableDisplay bool) {
 	// Set global configuration first (even in test mode)
-	SetConfig(cfg)
+	pm.SetConfig(cfg)
 
-	showingDisplay = enableDisplay
-
-	// Check if we're in test mode and should skip server operations
-	if TestMode {
-		log.Println("Test mode: Skipping actual pairing server start")
-		return
-	}
+	pm.showingDisplay = enableDisplay
 
 	// Check if server is already running
-	if IsServerRunning() {
+	if pm.IsServerRunning() {
 		log.Println("Pairing server already running")
 		return
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/pair", HandlePair(cfg))
-	mux.HandleFunc("/pair/confirm", HandleConfirm(cfg))
+	mux.HandleFunc("/pair", pm.HandlePair(cfg))
+	mux.HandleFunc("/pair/confirm", pm.HandleConfirm(cfg))
 
 	// Add pairing display route if enabled
 	if enableDisplay {
-		mux.HandleFunc("/display", HandleQRCodeDisplay(cfg))
+		mux.HandleFunc("/display", pm.display.HandleQRCodeDisplay(cfg))
 	}
 
 	addr := fmt.Sprintf(":%d", port)
@@ -375,11 +337,11 @@ func StartPairingServerOnPort(cfg config.ClientConfig, port int, enableDisplay b
 	}
 
 	// Set the global server instance
-	setServer(server)
+	pm.setServer(server)
 
 	// Start the cleanup goroutine when server starts
 	ctx, cancel := context.WithCancel(context.Background())
-	cancelCleanup = cancel
+	pm.cancelCleanup = cancel
 
 	go func() {
 		ticker := time.NewTicker(pairingCodeCleanupInterval)
@@ -389,26 +351,28 @@ func StartPairingServerOnPort(cfg config.ClientConfig, port int, enableDisplay b
 			select {
 			case <-ticker.C:
 				// Clean up expired pairing codes
-				codeMutex.Lock()
-				if time.Now().After(expiry) && pairCode != "" {
-					log.Printf("Pairing code '%s' expired, invalidating code (had %d failed attempts)", pairCode, failCount)
-					pairCode = ""
-					pairCodeIP = ""
-					expiry = time.Time{}
-					failCount = 0
-					_ = DeletePairingCode()
-				} else if failCount >= maxFailCount && pairCode != "" {
-					log.Printf("Max pairing attempts reached for code '%s' (%d/%d failed attempts), invalidating code", pairCode, failCount, maxFailCount)
-					pairCode = ""
-					pairCodeIP = ""
-					expiry = time.Time{}
-					failCount = 0
-					_ = DeletePairingCode()
+				pm.codeMutex.Lock()
+				if time.Now().After(pm.expiry) && pm.pairCode != "" {
+					log.Printf("Pairing code '%s' expired, invalidating code (had %d failed attempts)", pm.pairCode, pm.failCount)
+					pm.pairCode = ""
+					pm.pairCodeIP = ""
+					pm.expiry = time.Time{}
+					pm.failCount = 0
+					_ = pm.DeletePairingCode()
+					utils.ClearECDHKeys() // Clear ECDH keys when code expires
+				} else if pm.failCount >= MAX_FAIL_COUNT && pm.pairCode != "" {
+					log.Printf("Max pairing attempts reached for code '%s' (%d/%d failed attempts), invalidating code", pm.pairCode, pm.failCount, MAX_FAIL_COUNT)
+					pm.pairCode = ""
+					pm.pairCodeIP = ""
+					pm.expiry = time.Time{}
+					pm.failCount = 0
+					_ = pm.DeletePairingCode()
+					utils.ClearECDHKeys() // Clear ECDH keys when max attempts reached
 				}
-				codeMutex.Unlock()
+				pm.codeMutex.Unlock()
 
 				// Clean up expired blacklist entries
-				cleanupBlacklist()
+				pm.cleanupBlacklist()
 			case <-ctx.Done():
 				log.Println("Pairing cleanup stopped")
 				return
@@ -419,41 +383,48 @@ func StartPairingServerOnPort(cfg config.ClientConfig, port int, enableDisplay b
 	log.Printf("Pairing server started on %s", addr)
 
 	// Trigger server started callback
-	triggerOnServerStarted(addr)
+	pm.triggerOnServerStarted(addr)
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Printf("Pairing server failed: %v", err)
-		clearServer()
-		triggerOnServerStopped()
-		return
-	}
-	log.Println("Pairing server stopped")
-	clearServer()
-	triggerOnServerStopped()
+	// Start server in a goroutine to avoid blocking
+	serverDone := make(chan error, 1)
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("Pairing server failed: %v", err)
+			serverDone <- err
+		} else {
+			log.Println("Pairing server stopped")
+			serverDone <- nil
+		}
+	}()
+
+	// Wait for server to finish
+	<-serverDone
+	pm.clearServer()
+	pm.triggerOnServerStopped()
 }
 
-func HandlePair(cfg config.ClientConfig) http.HandlerFunc {
+func (pm *PairingManager) HandlePair(cfg config.ClientConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Get client IP
 		clientIP := getClientIP(r)
 
 		// Check if IP is blacklisted
-		if isIPBlacklisted(clientIP) {
+		if pm.isIPBlacklisted(clientIP) {
 			log.Printf("Pairing request rejected: IP %s is blacklisted", clientIP)
 			http.Error(w, "Access denied", http.StatusForbidden)
 			return
 		}
 
-		codeMutex.Lock()
-		defer codeMutex.Unlock()
+		pm.codeMutex.Lock()
+		defer pm.codeMutex.Unlock()
 
 		// Check if a valid pairing code already exists
-		if pairCode != "" && time.Now().Before(expiry) {
-			log.Printf("Pairing code request from IP %s: existing valid code '%s' still active, expires at %s", clientIP, pairCode, expiry.Local().Format(time.RFC3339))
+		if pm.pairCode != "" && time.Now().Before(pm.expiry) {
+			log.Printf("Pairing code request from IP %s: existing valid code '%s' still active, expires at %s", clientIP, pm.pairCode, pm.expiry.Local().Format(time.RFC3339))
 
 			// Return the existing code information
 			message := "Pairing code already active, "
-			if showingDisplay {
+			if pm.showingDisplay {
 				message += "please check /display for the code."
 			} else {
 				message += "please check device for code."
@@ -461,27 +432,36 @@ func HandlePair(cfg config.ClientConfig) http.HandlerFunc {
 
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"message": message,
-				"expiry":  expiry.Format(time.RFC3339),
+				"expiry":  pm.expiry.Format(time.RFC3339),
 			})
 			return
 		}
 
 		// Generate new code only if no valid code exists
-		pairCode = GenerateCode()
-		pairCodeIP = clientIP
-		expiry = time.Now().Add(pairingCodeExpiry)
-		failCount = 0
+		pm.pairCode = utils.GenerateCode(pairingCodeLength)
+		pm.pairCodeIP = clientIP
+		pm.expiry = time.Now().Add(pairingCodeExpiry)
+		pm.failCount = 0
 
-		log.Printf("Generated pairing code: %s for IP %s, expires at %s", pairCode, clientIP, expiry.Local().Format(time.RFC3339))
+		// Generate ECDH key pair for secure communication
+		log.Printf("Generating ECDH key pair for pairing session...")
+		if err := utils.GenerateECDHKeyPair(); err != nil {
+			log.Printf("Failed to generate ECDH key pair: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		log.Printf("ECDH key pair generated successfully")
 
-		SavePairingCode(pairCode)
+		log.Printf("Generated pairing code: %s for IP %s, expires at %s", pm.pairCode, clientIP, pm.expiry.Local().Format(time.RFC3339))
+
+		pm.SavePairingCode(pm.pairCode)
 
 		// Trigger pairing started callback
-		triggerOnPairingStarted(pairCode, expiry)
+		pm.triggerOnPairingStarted(pm.pairCode, pm.expiry)
 
 		message := "Pairing code generated, "
 
-		if showingDisplay {
+		if pm.showingDisplay {
 			message += "please check /display for the code."
 		} else {
 			message += "please check device for code."
@@ -489,223 +469,193 @@ func HandlePair(cfg config.ClientConfig) http.HandlerFunc {
 
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"message": message,
-			"expiry":  expiry.Format(time.RFC3339),
+			"expiry":  pm.expiry.Format(time.RFC3339),
 		})
 	}
 }
 
-func HandleConfirm(cfg config.ClientConfig) http.HandlerFunc {
+func (pm *PairingManager) HandleConfirm(cfg config.ClientConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Get client IP
 		clientIP := getClientIP(r)
 
 		// Check if IP is blacklisted
-		if isIPBlacklisted(clientIP) {
+		if pm.isIPBlacklisted(clientIP) {
 			log.Printf("Pairing confirmation rejected: IP %s is blacklisted", clientIP)
 			http.Error(w, "Access denied", http.StatusForbidden)
 			return
 		}
 
 		var req struct {
-			Code     string `json:"code"`
-			ServerWs string `json:"serverWs"`
+			Code            string `json:"code"`
+			ServerWs        string `json:"serverWs"`
+			ServerPublicKey string `json:"serverPublicKey"` // Server's ECDH public key (base64)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			log.Printf("Pairing attempt failed: invalid request format from IP %s", clientIP)
-			triggerOnPairingFailed("invalid_request", failCount)
+			pm.triggerOnPairingFailed("invalid_request", pm.failCount)
 			http.Error(w, "Invalid request", http.StatusBadRequest)
 			return
 		}
 
-		codeMutex.Lock()
-		defer codeMutex.Unlock()
+		pm.codeMutex.Lock()
+		defer pm.codeMutex.Unlock()
 
-		log.Printf("Pairing attempt received from IP %s: code='%s' (attempt %d/%d)", clientIP, req.Code, failCount+1, maxFailCount)
+		log.Printf("Pairing attempt received from IP %s: code='%s' (attempt %d/%d)", clientIP, req.Code, pm.failCount+1, MAX_FAIL_COUNT)
 
 		// Check if IP matches the one that generated the code
-		if pairCodeIP != "" && clientIP != pairCodeIP {
-			log.Printf("Pairing attempt rejected: IP mismatch. Code generated by %s, attempt from %s", pairCodeIP, clientIP)
+		if pm.pairCodeIP != "" && clientIP != pm.pairCodeIP {
+			log.Printf("Pairing attempt rejected: IP mismatch. Code generated by %s, attempt from %s", pm.pairCodeIP, clientIP)
 
 			// Record violation and potentially blacklist the IP
-			recordIPViolation(clientIP)
+			pm.recordIPViolation(clientIP)
 
-			triggerOnPairingFailed("ip_mismatch", failCount)
+			pm.triggerOnPairingFailed("ip_mismatch", pm.failCount)
 			http.Error(w, "Access denied", http.StatusForbidden)
 			return
 		}
 
-		if time.Now().After(expiry) || failCount >= 3 {
-			log.Printf("Pairing attempt rejected: code expired or max attempts reached (failCount: %d)", failCount)
-			triggerOnPairingFailed("expired_or_max_attempts", failCount)
+		if time.Now().After(pm.expiry) || pm.failCount >= 3 {
+			log.Printf("Pairing attempt rejected: code expired or max attempts reached (failCount: %d)", pm.failCount)
+			pm.triggerOnPairingFailed("expired_or_max_attempts", pm.failCount)
 			http.Error(w, "Code expired or max attempts", http.StatusForbidden)
 			return
 		}
-		if req.Code != pairCode {
-			failCount++
-			log.Printf("Pairing attempt failed: incorrect code '%s' (expected '%s'). Fail count: %d/%d", req.Code, pairCode, failCount, maxFailCount)
-			triggerOnPairingFailed("incorrect_code", failCount)
+		if req.Code != pm.pairCode {
+			pm.failCount++
+			log.Printf("Pairing attempt failed: incorrect code '%s' (expected '%s'). Fail count: %d/%d", req.Code, pm.pairCode, pm.failCount, MAX_FAIL_COUNT)
+			pm.triggerOnPairingFailed("incorrect_code", pm.failCount)
 			http.Error(w, "Incorrect code", http.StatusUnauthorized)
 			return
 		}
 
 		log.Printf("Pairing successful! Code '%s' accepted from IP %s. Connecting to %s", req.Code, clientIP, req.ServerWs)
-		token := CreateJWT(cfg.ClientID)
-		state.SaveState(state.PairedState{ServerWs: req.ServerWs, Token: token})
 
-		DeletePairingCode() // Clear pairing code after successful pairing
+		// Perform ECDH key exchange if server public key is provided
+		var sessionKeyB64 string
+		if req.ServerPublicKey != "" {
+			log.Printf("Server provided public key, performing ECDH key exchange...")
+			// Derive shared secret using ECDH
+			if err := utils.DeriveSharedSecret(req.ServerPublicKey); err != nil {
+				log.Printf("Failed to derive shared secret: %v", err)
+				http.Error(w, "Key exchange failed", http.StatusInternalServerError)
+				return
+			}
+
+			// Derive session key using HKDF with pairing code as info
+			keyInfo := fmt.Sprintf("msm-pairing-%s", req.Code)
+			if err := utils.DeriveSessionKey(keyInfo); err != nil {
+				log.Printf("Failed to derive session key: %v", err)
+				http.Error(w, "Key derivation failed", http.StatusInternalServerError)
+				return
+			}
+
+			// Get the derived session key
+			sessionKeyB64 = utils.GetSessionKey()
+			if sessionKeyB64 == "" {
+				log.Printf("Session key derivation succeeded but key is empty")
+				http.Error(w, "Session key invalid", http.StatusInternalServerError)
+				return
+			}
+
+			log.Printf("Successfully completed ECDH key exchange and derived session key")
+		} else {
+			log.Printf("No server public key provided, skipping ECDH key exchange")
+		}
+
+		// Save the pairing state with session key if available
+		pairedState := state.PairedState{
+			ServerWs:   req.ServerWs,
+			SessionKey: sessionKeyB64, // Will be empty string if no ECDH was performed
+		}
+		state.SaveState(pairedState)
 
 		// Trigger success callback
-		triggerOnPairingSuccess(req.ServerWs, token)
+		pm.triggerOnPairingSuccess(req.ServerWs)
 
 		// Cancel the cleanup goroutine since pairing was successful
-		if cancelCleanup != nil {
-			cancelCleanup()
-			cancelCleanup = nil
+		if pm.cancelCleanup != nil {
+			pm.cancelCleanup()
+			pm.cancelCleanup = nil
 		}
 
 		// Get all network interfaces (Ethernet and WiFi only)
-		networkInterfaces := utils.GetNetworkInterfaces()
+		interfaces := utils.GetNetworkInterfaces()
+		networkInterfaces := make([]any, len(interfaces))
+		for i, iface := range interfaces {
+			networkInterfaces[i] = iface
+		}
+
+		// Get the ECDH public key for response
+		log.Printf("Getting ECDH public key for response...")
+		ecdhPublicKeyB64 := utils.GetECDHPublicKey()
+		log.Printf("ECDH public key length: %d, session key available: %t", len(ecdhPublicKeyB64), sessionKeyB64 != "")
+
+		// Ensure we have a valid client ID
+		clientId := "unknown"
+		if cfg.ClientID != "" {
+			clientId = cfg.ClientID
+		}
 
 		responseData := map[string]any{
-			"message":    "paired",
-			"token":      token,
-			"clientId":   cfg.ClientID,
-			"interfaces": networkInterfaces,
+			"message":       "paired",
+			"clientId":      clientId,
+			"interfaces":    networkInterfaces,
+			"ecdhPublicKey": ecdhPublicKeyB64,
 		}
+
+		// Include session key in response if available (for verification/debugging)
+		if sessionKeyB64 != "" {
+			responseData["sessionKeyDerived"] = true
+			log.Printf("Session key successfully derived and ready for secure communication")
+		}
+
+		// Clear ECDH keys after constructing response
+		utils.ClearECDHKeys()
 
 		_ = json.NewEncoder(w).Encode(responseData)
 
 		go func() {
 			// Give the HTTP response time to be sent
 			time.Sleep(100 * time.Millisecond)
-			server := GetServer()
+			server := pm.GetServer()
 			if server != nil {
 				_ = server.Shutdown(context.Background())
 			}
+			pm.ResetPairing()
 		}()
 	}
 }
 
-func HandleQRCodeDisplay(cfg config.ClientConfig) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Set content type to HTML
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+func (pm *PairingManager) ValidateCode(code string) bool {
+	pm.codeMutex.Lock()
+	defer pm.codeMutex.Unlock()
 
-		// Add cache control headers to ensure fresh content
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		w.Header().Set("Pragma", "no-cache")
-		w.Header().Set("Expires", "0")
-
-		codeMutex.Lock()
-		currentCode := pairCode
-		currentExpiry := expiry
-		codeMutex.Unlock()
-
-		// Template data
-		data := struct {
-			Code        string
-			QRCodeImage string
-			Expiry      string
-		}{}
-
-		// Check if we have a valid code
-		if currentCode != "" && time.Now().Before(currentExpiry) {
-			data.Code = currentCode
-			data.Expiry = currentExpiry.Local().Format("Jan 2, 2006 3:04:05 PM")
-
-			// Generate QR code containing just the pairing code
-			if qrCodeData, err := generateQRCode(currentCode); err == nil {
-				data.QRCodeImage = base64.StdEncoding.EncodeToString(qrCodeData)
-			}
-		} else if currentCode != "" && time.Now().After(currentExpiry) {
-			// Code has expired - still show it for the frontend to handle the grace period
-			data.Code = currentCode
-			data.Expiry = currentExpiry.Local().Format("Jan 2, 2006 3:04:05 PM")
-
-			// Generate QR code for expired state (still show it)
-			if qrCodeData, err := generateQRCode(currentCode); err == nil {
-				data.QRCodeImage = base64.StdEncoding.EncodeToString(qrCodeData)
-			}
-		}
-		// If no code at all, data remains empty and template shows "no code" state
-
-		// Load and parse template from file
-		templatePath := getTemplatePath()
-		tmpl, err := template.ParseFiles(templatePath)
-		if err != nil {
-			log.Printf("Template loading error from %s: %v", templatePath, err)
-			// Fallback to a simple error message
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "<html><body><h1>Template Error</h1><p>Could not load pairing display template from: %s</p><p>Error: %v</p></body></html>", templatePath, err)
-			return
-		}
-
-		if err := tmpl.Execute(w, data); err != nil {
-			log.Printf("Template execution error: %v", err)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
-		}
-	}
-}
-
-func generateQRCode(code string) ([]byte, error) {
-	// Generate QR code as PNG containing the pairing code
-	// The QR code will contain just the pairing code string (e.g., "ABC123")
-	png, err := qrcode.Encode(code, qrcode.Medium, 256)
-	if err != nil {
-		return nil, err
-	}
-	return png, nil
-}
-
-func GenerateCode() string {
-	const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, pairingCodeLength)
-	for i := range b {
-		b[i] = letters[rand.Intn(len(letters))]
-	}
-	return string(b)
-}
-
-func CreateJWT(clientID string) string {
-	secret_key := config.GetSecretKey()
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"clientId": clientID,
-		"exp":      time.Now().Add(24 * time.Hour).Unix(),
-	})
-	signed, _ := token.SignedString([]byte(secret_key))
-	return signed
-}
-
-func ValidateCode(code string) bool {
-	codeMutex.Lock()
-	defer codeMutex.Unlock()
-
-	if time.Now().After(expiry) || failCount >= 3 {
+	if time.Now().After(pm.expiry) || pm.failCount >= 3 {
 		return false
 	}
-	if code != pairCode {
-		failCount++
+	if code != pm.pairCode {
+		pm.failCount++
 		return false
 	}
 	return true
 }
 
-func ResetPairing() {
-	codeMutex.Lock()
-	defer codeMutex.Unlock()
+func (pm *PairingManager) ResetPairing() {
+	pm.codeMutex.Lock()
+	defer pm.codeMutex.Unlock()
 
-	pairCode = ""
-	pairCodeIP = ""
-	expiry = time.Time{}
-	failCount = 0
+	pm.pairCode = ""
+	pm.pairCodeIP = ""
+	pm.expiry = time.Time{}
+	pm.failCount = 0
 	log.Println("Pairing reset")
 
-	DeletePairingCode()
+	pm.DeletePairingCode()
 }
 
-func StopPairingServer() {
-	server := GetServer()
+func (pm *PairingManager) StopPairingServer() {
+	server := pm.GetServer()
 	if server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -714,38 +664,42 @@ func StopPairingServer() {
 		} else {
 			log.Println("Pairing server stopped gracefully")
 		}
-		clearServer()
-		triggerOnServerStopped()
+		pm.clearServer()
+		pm.triggerOnServerStopped()
+		pm.ResetPairing()
 	}
 
 	// Cancel cleanup goroutine if running
-	if cancelCleanup != nil {
-		cancelCleanup()
-		cancelCleanup = nil
+	if pm.cancelCleanup != nil {
+		pm.cancelCleanup()
+		pm.cancelCleanup = nil
 	}
+
+	// Clear ECDH keys when server stops
+	utils.ClearECDHKeys()
 }
 
-func GetPairingCode() (string, time.Time) {
-	codeMutex.Lock()
-	defer codeMutex.Unlock()
+func (pm *PairingManager) GetPairingCode() (string, time.Time) {
+	pm.codeMutex.Lock()
+	defer pm.codeMutex.Unlock()
 
-	if time.Now().After(expiry) || failCount >= 3 {
+	if time.Now().After(pm.expiry) || pm.failCount >= 3 {
 		return "", time.Time{}
 	}
-	return pairCode, expiry
+	return pm.pairCode, pm.expiry
 }
 
-func GetPairingStatus() (string, time.Time, int) {
-	codeMutex.Lock()
-	defer codeMutex.Unlock()
+func (pm *PairingManager) GetPairingStatus() (string, time.Time, int) {
+	pm.codeMutex.Lock()
+	defer pm.codeMutex.Unlock()
 
-	if time.Now().After(expiry) || failCount >= 3 {
-		return "expired", time.Time{}, failCount
+	if time.Now().After(pm.expiry) || pm.failCount >= 3 {
+		return "expired", time.Time{}, pm.failCount
 	}
-	return pairCode, expiry, failCount
+	return pm.pairCode, pm.expiry, pm.failCount
 }
 
-func WatchPairingCode(interval time.Duration) {
+func (pm *PairingManager) WatchPairingCode(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -753,7 +707,7 @@ func WatchPairingCode(interval time.Duration) {
 
 	// Check immediately on start
 	checkCode := func() {
-		code, err := LoadPairingCode()
+		code, err := pm.LoadPairingCode()
 		if err != nil {
 			log.Printf("Failed to load pairing code")
 		}
@@ -778,7 +732,7 @@ func WatchPairingCode(interval time.Duration) {
 	}
 }
 
-func SavePairingCode(code string) error {
+func (pm *PairingManager) SavePairingCode(code string) error {
 	pairingPath := getPairingPath()
 
 	// Create directory if it doesn't exist
@@ -791,7 +745,7 @@ func SavePairingCode(code string) error {
 	return utils.WriteFile(pairingPath, []byte(code))
 }
 
-func LoadPairingCode() (string, error) {
+func (pm *PairingManager) LoadPairingCode() (string, error) {
 	pairingPath := getPairingPath()
 	data, err := utils.ReadFile(pairingPath)
 	if err != nil {
@@ -800,18 +754,18 @@ func LoadPairingCode() (string, error) {
 	return string(data), nil
 }
 
-func DeletePairingCode() error {
+func (pm *PairingManager) DeletePairingCode() error {
 	pairingPath := getPairingPath()
 	return utils.DeleteFile(pairingPath)
 }
 
 // GetBlacklistStatus returns the current blacklist status
-func GetBlacklistStatus() map[string]time.Time {
-	blacklistMutex.Lock()
-	defer blacklistMutex.Unlock()
+func (pm *PairingManager) GetBlacklistStatus() map[string]time.Time {
+	pm.blacklistMutex.Lock()
+	defer pm.blacklistMutex.Unlock()
 
 	result := make(map[string]time.Time)
-	for ip, expiry := range ipBlacklist {
+	for ip, expiry := range pm.ipBlacklist {
 		if time.Now().Before(expiry) {
 			result[ip] = expiry
 		}
@@ -820,11 +774,11 @@ func GetBlacklistStatus() map[string]time.Time {
 }
 
 // ClearBlacklist manually clears all blacklist entries (for admin use)
-func ClearBlacklist() {
-	blacklistMutex.Lock()
-	defer blacklistMutex.Unlock()
+func (pm *PairingManager) ClearBlacklist() {
+	pm.blacklistMutex.Lock()
+	defer pm.blacklistMutex.Unlock()
 
-	ipBlacklist = make(map[string]time.Time)
-	ipViolations = make(map[string]int)
+	pm.ipBlacklist = make(map[string]time.Time)
+	pm.ipViolations = make(map[string]int)
 	log.Println("All blacklist entries cleared")
 }

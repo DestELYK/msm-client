@@ -14,7 +14,6 @@ import (
 
 type ClientConfig struct {
 	ClientID        string `json:"client_id"`
-	DeviceName      string `json:"device_name,omitempty"`      // Optional device name
 	UpdateInterval  int    `json:"update_interval,omitempty"`  // in seconds
 	DisableCommands bool   `json:"disable_commands,omitempty"` // Disable remote command execution
 }

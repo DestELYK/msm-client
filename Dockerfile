@@ -1,5 +1,5 @@
 # Start from the official Golang image
-FROM golang:1.22.2-alpine AS builder
+FROM golang:1.23.0-alpine AS builder
 
 WORKDIR /app
 

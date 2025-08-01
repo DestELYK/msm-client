@@ -1,9 +1,10 @@
 package ws
 
 import (
-	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"sync"
@@ -17,7 +18,7 @@ import (
 )
 
 // Global WebSocket connection variables
-var (
+type WebSocketManager struct {
 	Connection *websocket.Conn
 	Headers    http.Header
 	mu         sync.RWMutex
@@ -27,7 +28,7 @@ var (
 	TestMode bool
 	// Current client configuration
 	clientConfig config.ClientConfig
-)
+}
 
 // MessageType represents the type of WebSocket message
 type MessageType string
@@ -43,6 +44,7 @@ const (
 	MessageTypeStatus          MessageType = "status"
 	MessageTypeCommandResponse MessageType = "command_response"
 	MessageTypeError           MessageType = "error"
+	MessageTypeDisconnect      MessageType = "disconnect"
 )
 
 // CommandType represents the type of command
@@ -62,97 +64,122 @@ const (
 	StatusError        ResponseStatus = "error"
 )
 
-// isTestEnvironment checks if we're running in a test environment
-func isTestEnvironment() bool {
-	return TestMode || os.Getenv("GO_TEST_MODE") == "1"
+// NewWebSocketManager creates a new WebSocketManager instance
+func NewWebSocketManager() *WebSocketManager {
+	return &WebSocketManager{
+		TestMode: isTestEnvironment(),
+	}
 }
 
-// SetTestMode enables or disables test mode
-func SetTestMode(enabled bool) {
-	mu.Lock()
-	defer mu.Unlock()
-	TestMode = enabled
+// generateStatusData creates a status data map with current client information
+func (wsm *WebSocketManager) generateStatusData() map[string]any {
+	wsm.mu.RLock()
+	clientID := wsm.clientConfig.ClientID
+	wsm.mu.RUnlock()
+
+	return map[string]any{
+		"clientId":   clientID,
+		"uptime":     utils.GetUptime(),
+		"interfaces": utils.GetNetworkInterfaces(),
+		"timestamp":  time.Now().Format(time.RFC3339),
+	}
+}
+
+// isTestEnvironment checks if we're running in a test environment
+func isTestEnvironment() bool {
+	return os.Getenv("GO_TEST_MODE") == "1"
 }
 
 // GetConnection returns the current WebSocket connection (thread-safe)
-func GetConnection() *websocket.Conn {
-	mu.RLock()
-	defer mu.RUnlock()
-	return Connection
+func (wsm *WebSocketManager) GetConnection() *websocket.Conn {
+	wsm.mu.RLock()
+	defer wsm.mu.RUnlock()
+	return wsm.Connection
 }
 
 // IsConnected returns whether the WebSocket is currently connected (thread-safe)
-func IsConnected() bool {
-	mu.RLock()
-	defer mu.RUnlock()
-	return connected && Connection != nil
+func (wsm *WebSocketManager) IsConnected() bool {
+	wsm.mu.RLock()
+	defer wsm.mu.RUnlock()
+	return wsm.connected && wsm.Connection != nil
 }
 
 // SetShutdown sets the shutdown flag to prevent reconnection (thread-safe)
-func SetShutdown() {
-	mu.Lock()
-	defer mu.Unlock()
-	shutdown = true
+func (wsm *WebSocketManager) SetShutdown() {
+	wsm.mu.Lock()
+	defer wsm.mu.Unlock()
+	wsm.shutdown = true
 }
 
 // IsShutdown returns whether shutdown has been initiated (thread-safe)
-func IsShutdown() bool {
-	mu.RLock()
-	defer mu.RUnlock()
-	return shutdown
+func (wsm *WebSocketManager) IsShutdown() bool {
+	wsm.mu.RLock()
+	defer wsm.mu.RUnlock()
+	return wsm.shutdown
 }
 
 // ResetShutdown clears the shutdown flag to allow reconnection (thread-safe)
-func ResetShutdown() {
-	mu.Lock()
-	defer mu.Unlock()
-	shutdown = false
+func (wsm *WebSocketManager) ResetShutdown() {
+	wsm.mu.Lock()
+	defer wsm.mu.Unlock()
+	wsm.shutdown = false
 }
 
 // setConnection sets the global connection and headers (thread-safe)
-func setConnection(conn *websocket.Conn, headers http.Header) {
-	mu.Lock()
-	defer mu.Unlock()
-	Connection = conn
-	Headers = headers
-	connected = true
+func (wsm *WebSocketManager) setConnection(conn *websocket.Conn, headers http.Header) {
+	wsm.mu.Lock()
+	defer wsm.mu.Unlock()
+	wsm.Connection = conn
+	wsm.Headers = headers
+	wsm.connected = true
 }
 
 // clearConnection clears the global connection and headers (thread-safe)
-func clearConnection() {
-	mu.Lock()
-	defer mu.Unlock()
-	if Connection != nil {
-		Connection.Close()
+func (wsm *WebSocketManager) clearConnection() {
+	wsm.mu.Lock()
+	defer wsm.mu.Unlock()
+	if wsm.Connection != nil {
+		wsm.Connection.Close()
 	}
-	Connection = nil
-	Headers = nil
-	connected = false
+	wsm.Connection = nil
+	wsm.Headers = nil
+	wsm.connected = false
 }
 
 // SendMessage sends a message using the global connection (thread-safe)
-func SendMessage(messageType MessageType, data map[string]interface{}) error {
-	conn := GetConnection()
+func (wsm *WebSocketManager) SendMessage(messageType MessageType, data map[string]interface{}) error {
+	conn := wsm.GetConnection()
 	if conn == nil {
 		return websocket.ErrCloseSent // Connection not available
 	}
 
-	return sendResponse(conn, messageType, data)
+	return wsm.sendResponse(conn, messageType, data)
 }
 
-func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
+func (wsm *WebSocketManager) ConnectWebSocket(cfg config.ClientConfig, serverWs string) {
 	// Store config globally for use in command handling
-	mu.Lock()
-	clientConfig = cfg
-	mu.Unlock()
+	wsm.mu.Lock()
+	wsm.clientConfig = cfg
+	wsm.mu.Unlock()
+
+	// Parse WebSocket URL and add client_id as query parameter
+	wsURL, err := url.Parse(serverWs)
+	if err != nil {
+		log.Printf("Failed to parse WebSocket URL: %v", err)
+		return
+	}
+
+	// Add client_id query parameter
+	query := wsURL.Query()
+	query.Set("client_id", cfg.ClientID)
+	wsURL.RawQuery = query.Encode()
 
 	headers := make(http.Header)
-	headers.Set("Authorization", "Bearer "+token)
 
 	backoff := time.Second
 	for {
 		// Check if shutdown has been initiated
-		if IsShutdown() {
+		if wsm.IsShutdown() {
 			log.Println("Shutdown initiated, stopping WebSocket connection attempts")
 			return
 		}
@@ -163,7 +190,7 @@ func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
 			return
 		}
 
-		c, _, err := websocket.DefaultDialer.Dial(serverWs, headers)
+		c, _, err := websocket.DefaultDialer.Dial(wsURL.String(), headers)
 		if err != nil {
 			log.Printf("WebSocket connection failed: %v (retrying in %s)", err, backoff)
 			time.Sleep(backoff)
@@ -178,7 +205,7 @@ func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
 		backoff = time.Second
 
 		// Set global connection variables
-		setConnection(c, headers)
+		wsm.setConnection(c, headers)
 
 		// Channel to signal when connection should close
 		done := make(chan struct{})
@@ -190,6 +217,10 @@ func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
 		go func() {
 			defer closeOnce.Do(func() { close(done) })
 			for {
+				if wsm.IsShutdown() {
+					return
+				}
+
 				var message map[string]interface{}
 				err := c.ReadJSON(&message)
 				if err != nil {
@@ -199,13 +230,13 @@ func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
 
 				// Check if this is a deactivated message
 				if msgType, ok := message["type"].(string); ok && MessageType(msgType) == MessageTypeDeactivated {
-					handleDeactivated(c, message)
-					close(deactivated)
+					wsm.handleDeactivated(c, message)
+					closeOnce.Do(func() { close(deactivated) })
 					return
 				}
 
 				// Handle other incoming messages
-				handleMessage(c, message)
+				wsm.handleMessage(c, message)
 			}
 		}()
 
@@ -223,16 +254,14 @@ func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
 			for {
 				select {
 				case <-ticker.C:
-					log.Println("Sending status update to server")
-					statusData := map[string]any{
-						"type":       MessageTypeStatus,
-						"clientId":   cfg.ClientID,
-						"uptime":     utils.GetUptime(),
-						"interfaces": utils.GetNetworkInterfaces(),
-						"timestamp":  time.Now().Format(time.RFC3339),
+					if wsm.IsShutdown() {
+						closeOnce.Do(func() { close(done) })
+						return
 					}
 
-					err := c.WriteJSON(statusData)
+					statusData := wsm.generateStatusData()
+
+					err := wsm.sendResponse(c, MessageTypeStatus, statusData)
 					if err != nil {
 						log.Printf("Write failed: %v", err)
 						return
@@ -261,10 +290,14 @@ func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
 			for {
 				select {
 				case <-ticker.C:
+					if wsm.IsShutdown() {
+						closeOnce.Do(func() { close(done) })
+						return
+					}
+
 					if !state.HasState() {
 						log.Println("State file no longer exists, closing WebSocket connection to restart pairing")
-						close(stateDeleted)
-						closeOnce.Do(func() { close(done) })
+						closeOnce.Do(func() { close(stateDeleted) })
 						return
 					}
 				case <-done:
@@ -280,26 +313,53 @@ func ConnectWebSocket(cfg config.ClientConfig, serverWs string, token string) {
 		// Wait for either goroutine to finish
 		select {
 		case <-done:
-			clearConnection()
+			wsm.clearConnection()
 			// Check if shutdown has been initiated before attempting reconnect
-			if IsShutdown() {
+			if wsm.IsShutdown() {
 				log.Println("WebSocket connection closed during shutdown, not reconnecting")
 				return
 			}
 			log.Println("WebSocket connection closed, attempting to reconnect...")
 		case <-stateDeleted:
-			clearConnection()
+			wsm.clearConnection()
 			log.Println("State file deleted, closing WebSocket to restart pairing server")
 			return // Exit function to allow pairing server restart
 		case <-deactivated:
-			clearConnection()
+			wsm.clearConnection()
 			log.Println("Device deactivated by server, exiting WebSocket connection")
 			return // Exit function to stop WebSocket and allow pairing restart
 		}
 	}
 }
 
-func handleMessage(c *websocket.Conn, message map[string]interface{}) {
+func (wsm *WebSocketManager) handleMessage(c *websocket.Conn, message map[string]interface{}) {
+	// Check if message is encrypted and decrypt if necessary
+	if utils.IsEncryptedWebSocketMessage(message) {
+		sessionKey := state.GetSessionKey()
+		if sessionKey != "" {
+			decryptedMessage, err := utils.DecryptWebSocketMessage(message, sessionKey)
+			if err != nil {
+				log.Printf("Failed to decrypt message: %v.", err)
+				wsm.ShutdownWebSocket(false)
+				state.DeleteState() // Clear state on decryption failure
+				return
+			}
+			message = decryptedMessage
+		} else {
+			log.Printf("Received encrypted message but no session key available")
+			wsm.sendResponse(c, MessageTypeError, map[string]interface{}{
+				"message":   "No session key available for decryption",
+				"timestamp": time.Now().Unix(),
+			})
+			return
+		}
+	} else {
+		log.Println("Received unencrypted message, disconnecting from server")
+		wsm.ShutdownWebSocket(false)
+		state.DeleteState() // Clear state on decryption failure
+		return
+	}
+
 	msgType, ok := message["type"].(string)
 	if !ok {
 		log.Printf("Received message without type: %v", message)
@@ -310,41 +370,54 @@ func handleMessage(c *websocket.Conn, message map[string]interface{}) {
 	case MessageTypePing:
 		log.Println("Received ping from server")
 		// Respond to ping with pong
-		sendResponse(c, MessageTypePong, map[string]interface{}{
+		wsm.sendResponse(c, MessageTypePong, map[string]interface{}{
 			"timestamp": time.Now().Unix(),
 		})
 	case MessageTypeCommand:
-		handleCommand(c, message)
+		wsm.handleCommand(c, message)
 	case MessageTypeDeactivated:
-		handleDeactivated(c, message)
+		wsm.handleDeactivated(c, message)
+	case MessageTypeError:
+		wsm.handleError(c, message)
 	default:
 		log.Printf("Received unknown message type '%s': %v", msgType, message)
 	}
 }
 
-func handleCommand(c *websocket.Conn, message map[string]interface{}) {
+func (wsm *WebSocketManager) handleCommand(c *websocket.Conn, message map[string]interface{}) {
 	command, ok := message["command"].(string)
 	if !ok {
 		log.Printf("Command message missing 'command' field: %v", message)
-		sendResponse(c, MessageTypeError, map[string]interface{}{
+		wsm.sendResponse(c, MessageTypeError, map[string]interface{}{
 			"message": "Command field missing",
 		})
 		return
 	}
 
-	log.Printf("Received command: %s", command)
+	// Extract command_id if present
+	commandID, hasCommandID := message["command_id"].(string)
+	if !hasCommandID {
+		log.Printf("Command message missing 'command_id' field: %v", message)
+		wsm.sendResponse(c, MessageTypeError, map[string]interface{}{
+			"message": "Command ID field missing",
+		})
+		return
+	}
+
+	log.Printf("Received command: %s (ID: %s)", command, commandID)
 
 	// Check if commands are disabled
-	mu.RLock()
-	commandsDisabled := clientConfig.DisableCommands
-	mu.RUnlock()
+	wsm.mu.RLock()
+	commandsDisabled := wsm.clientConfig.DisableCommands
+	wsm.mu.RUnlock()
 
 	if commandsDisabled {
 		log.Printf("Command execution disabled, rejecting command: %s", command)
-		sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
-			"command": command,
-			"status":  StatusError,
-			"message": "Command execution is disabled on this client",
+		wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
+			"command":    command,
+			"command_id": commandID,
+			"status":     StatusError,
+			"message":    "Command execution is disabled on this client",
 		})
 		return
 	}
@@ -352,10 +425,11 @@ func handleCommand(c *websocket.Conn, message map[string]interface{}) {
 	switch CommandType(command) {
 	case CommandReboot:
 		log.Println("Reboot command received - would reboot system")
-		sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
-			"command": CommandReboot,
-			"status":  StatusAcknowledged,
-			"message": "Reboot command received, system would reboot",
+		wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
+			"command":    CommandReboot,
+			"command_id": commandID,
+			"status":     StatusAcknowledged,
+			"message":    "Reboot command received, system would reboot",
 		})
 
 		// Only execute actual reboot command if not in test environment
@@ -364,10 +438,11 @@ func handleCommand(c *websocket.Conn, message map[string]interface{}) {
 			err := cmd.Run()
 			if err != nil {
 				log.Printf("Failed to execute reboot command: %v", err)
-				sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
-					"command": CommandReboot,
-					"status":  StatusError,
-					"message": "Failed to execute reboot command",
+				wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
+					"command":    CommandReboot,
+					"command_id": commandID,
+					"status":     StatusError,
+					"message":    "Failed to execute reboot command",
 				})
 				return
 			}
@@ -376,23 +451,27 @@ func handleCommand(c *websocket.Conn, message map[string]interface{}) {
 		}
 	case CommandStatus:
 		log.Println("Status request received")
-		sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
-			"command":   CommandStatus,
-			"status":    StatusSuccess,
-			"uptime":    time.Now().Unix(),
-			"timestamp": time.Now().Format(time.RFC3339),
-		})
+
+		// Generate status data
+		statusData := make(map[string]interface{})
+		statusData["data"] = wsm.generateStatusData()
+		statusData["command"] = CommandStatus
+		statusData["command_id"] = commandID
+		statusData["status"] = StatusSuccess
+
+		wsm.sendResponse(c, MessageTypeCommandResponse, statusData)
 	default:
 		log.Printf("Unknown command: %s", command)
-		sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
-			"command": command,
-			"status":  StatusError,
-			"message": "Unknown command",
+		wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
+			"command":    command,
+			"command_id": commandID,
+			"status":     StatusError,
+			"message":    "Unknown command",
 		})
 	}
 }
 
-func handleDeactivated(_ *websocket.Conn, message map[string]interface{}) {
+func (wsm *WebSocketManager) handleDeactivated(_ *websocket.Conn, message map[string]interface{}) {
 	deactivatedMessage := "Device deactivated by server"
 	if msg, ok := message["message"].(string); ok {
 		deactivatedMessage = msg
@@ -402,7 +481,13 @@ func handleDeactivated(_ *websocket.Conn, message map[string]interface{}) {
 	log.Println("Device has been deactivated by the server. Resetting pairing state...")
 
 	// Close the WebSocket connection immediately
-	clearConnection()
+	if wsm.IsConnected() {
+		if err := wsm.DisconnectWebSocket(nil, false); err != nil {
+			log.Printf("Failed to disconnect WebSocket: %v", err)
+		} else {
+			log.Println("WebSocket disconnected successfully")
+		}
+	}
 
 	// Remove the state file to reset pairing
 	if state.HasState() {
@@ -414,7 +499,25 @@ func handleDeactivated(_ *websocket.Conn, message map[string]interface{}) {
 	}
 }
 
-func sendResponse(c *websocket.Conn, messageType MessageType, data map[string]interface{}) error {
+func (wsm *WebSocketManager) handleError(_ *websocket.Conn, message map[string]interface{}) {
+	errorMessage := "Unknown error from server"
+	if msg, ok := message["message"].(string); ok {
+		errorMessage = msg
+	}
+
+	timestamp := "unknown"
+	if ts, ok := message["timestamp"]; ok {
+		if tsInt, ok := ts.(float64); ok {
+			timestamp = time.Unix(int64(tsInt), 0).Format(time.RFC3339)
+		} else if tsStr, ok := ts.(string); ok {
+			timestamp = tsStr
+		}
+	}
+
+	log.Printf("ERROR from server: %s (timestamp: %s)", errorMessage, timestamp)
+}
+
+func (wsm *WebSocketManager) sendResponse(c *websocket.Conn, messageType MessageType, data map[string]interface{}) error {
 	response := map[string]interface{}{
 		"type": string(messageType),
 	}
@@ -424,36 +527,57 @@ func sendResponse(c *websocket.Conn, messageType MessageType, data map[string]in
 		response[key] = value
 	}
 
-	err := c.WriteJSON(response)
-	if err != nil {
-		log.Printf("Failed to send response: %v", err)
+	// Add timestamp if not already present
+	if _, hasTimestamp := response["timestamp"]; !hasTimestamp {
+		response["timestamp"] = time.Now().Unix()
 	}
-	return err
+
+	// Check if we have a session key for encryption
+	sessionKey := state.GetSessionKey()
+
+	if sessionKey == "" {
+		return fmt.Errorf("no session key available, cannot send %s message", messageType)
+	}
+
+	// Encrypt the message
+	encryptedResponse, err := utils.EncryptWebSocketMessage(response, sessionKey)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt %s message: %w", messageType, err)
+	}
+
+	log.Printf("Sending encrypted %s message", messageType)
+	err = c.WriteJSON(encryptedResponse)
+	if err != nil {
+		return fmt.Errorf("failed to send %s message: %w", messageType, err)
+	}
+	return nil
 }
 
-func DisconnectWebSocket(c *websocket.Conn) error {
+func (wsm *WebSocketManager) DisconnectWebSocket(c *websocket.Conn, sendMessage bool) error {
 	// If no connection provided, use global connection
 	if c == nil {
-		c = GetConnection()
+		c = wsm.GetConnection()
 	}
 
 	if c == nil {
 		return nil // No connection to close
 	}
 
-	// Send disconnect message to server before closing
-	disconnectMsg := map[string]interface{}{
-		"type":      "disconnect",
-		"message":   "client_disconnecting",
-		"timestamp": time.Now().Unix(),
+	if !wsm.IsConnected() {
+		log.Println("WebSocket connection already closed or not connected")
+		wsm.clearConnection()
+		return nil
 	}
 
-	// Try to send disconnect message (but don't fail if it doesn't work)
-	if msgBytes, err := json.Marshal(disconnectMsg); err == nil {
-		if err := c.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
-			log.Printf("Failed to send disconnect message: %v", err)
+	if sendMessage {
+		// Send disconnect message to server before closing
+		// Try to send encrypted disconnect message using sendResponse
+		if err := wsm.sendResponse(c, MessageTypeDisconnect, map[string]interface{}{
+			"message": "client_disconnecting",
+		}); err != nil {
+			log.Printf("Failed to send encrypted disconnect message: %v", err)
 		} else {
-			log.Println("Sent disconnect message to server")
+			log.Println("Sent encrypted disconnect message to server")
 		}
 	}
 
@@ -466,25 +590,31 @@ func DisconnectWebSocket(c *websocket.Conn) error {
 	// Wait for the close acknowledgment
 	time.Sleep(5 * time.Second)
 
+	if !wsm.IsConnected() {
+		log.Println("WebSocket connection already closed or not connected")
+		wsm.clearConnection()
+		return nil
+	}
+
 	err = c.Close()
 	if err != nil {
 		log.Printf("Failed to close WebSocket connection: %v", err)
 	}
 
 	// Clear global connection variables
-	clearConnection()
+	wsm.clearConnection()
 
 	log.Println("WebSocket connection closed successfully")
 	return err
 }
 
 // ShutdownWebSocket gracefully disconnects and prevents reconnection
-func ShutdownWebSocket() error {
+func (wsm *WebSocketManager) ShutdownWebSocket(sendMessage bool) error {
 	log.Println("Initiating WebSocket shutdown...")
 
 	// Set shutdown flag to prevent reconnection
-	SetShutdown()
+	wsm.SetShutdown()
 
 	// Disconnect the current connection
-	return DisconnectWebSocket(nil)
+	return wsm.DisconnectWebSocket(nil, sendMessage)
 }
