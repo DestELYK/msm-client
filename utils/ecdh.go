@@ -54,7 +54,7 @@ func GetECDHPublicKey() string {
 	ecdhMutex.RLock()
 	defer ecdhMutex.RUnlock()
 
-	if ecdhPublicKey == nil || len(ecdhPublicKey) == 0 {
+	if len(ecdhPublicKey) == 0 {
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(ecdhPublicKey)
@@ -129,7 +129,7 @@ func GetSessionKey() string {
 	ecdhMutex.RLock()
 	defer ecdhMutex.RUnlock()
 
-	if sessionKey == nil || len(sessionKey) == 0 {
+	if len(sessionKey) == 0 {
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(sessionKey)
@@ -140,7 +140,7 @@ func GetSessionKeyBytes() []byte {
 	ecdhMutex.RLock()
 	defer ecdhMutex.RUnlock()
 
-	if sessionKey == nil || len(sessionKey) == 0 {
+	if len(sessionKey) == 0 {
 		return nil
 	}
 
