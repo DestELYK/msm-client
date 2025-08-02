@@ -48,11 +48,11 @@ func TestIPValidationModes(t *testing.T) {
 func TestDefaultConfig(t *testing.T) {
 	// Test that new configs have sensible defaults
 	cfg := ClientConfig{
-		ClientID:            "test-client",
-		UpdateInterval:      30,
-		StrictIPValidation:  false,
-		AllowIPSubnetMatch:  true, // This should be the default
-		DisableIPValidation: false,
+		ClientID:             "test-client",
+		StatusUpdateInterval: 30,
+		StrictIPValidation:   false,
+		AllowIPSubnetMatch:   true, // This should be the default
+		DisableIPValidation:  false,
 	}
 
 	mode := cfg.GetIPValidationMode()
@@ -145,7 +145,7 @@ func TestConfigValidation(t *testing.T) {
 	// Test validation with negative security values
 	cfg := ClientConfig{
 		ClientID:                 "550e8400-e29b-41d4-a716-446655440000", // Valid UUID
-		UpdateInterval:           30,
+		StatusUpdateInterval:     30,
 		MaxIPViolations:          -1,
 		IPBlacklistDuration:      -1 * time.Hour,
 		VerificationCodeLength:   -1,

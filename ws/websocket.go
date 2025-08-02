@@ -263,7 +263,7 @@ func (wsm *WebSocketManager) ConnectWebSocket(cfg config.ClientConfig, serverWs 
 		// Goroutine to send periodic status updates
 		go func() {
 			// Use shorter interval in test mode for faster test execution
-			interval := 10 * time.Second
+			interval := cfg.GetStatusUpdateInterval()
 			if isTestEnvironment() {
 				interval = 1 * time.Second
 			}
