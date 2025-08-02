@@ -641,7 +641,7 @@ func (wsm *WebSocketManager) handleCommand(c *websocket.Conn, message map[string
 		if !hasParams {
 			log.Printf("Screen switch command missing 'params' field: %v", message)
 			wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
-				"command":    CommandScreenSwitch,
+				"command":    CommandScreenReload,
 				"command_id": commandID,
 				"status":     StatusError,
 				"message":    "Params field missing",
