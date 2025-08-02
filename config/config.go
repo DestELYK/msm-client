@@ -15,9 +15,9 @@ import (
 )
 
 type ClientConfig struct {
-	ClientID        string `json:"client_id"`
-	UpdateInterval  int    `json:"update_interval,omitempty"`  // in seconds
-	DisableCommands bool   `json:"disable_commands,omitempty"` // Disable remote command execution
+	ClientID             string        `json:"client_id"`
+	StatusUpdateInterval time.Duration `json:"update_interval,omitempty"`  // How often to send status updates (default: 5 seconds)
+	DisableCommands      bool          `json:"disable_commands,omitempty"` // Disable remote command execution
 
 	VerificationCodeLength   int `json:"verification_code_length,omitempty"`   // Length of verification code (default: 6)
 	VerificationCodeAttempts int `json:"verification_code_attempts,omitempty"` // Max attempts for verification code (default: 3)
@@ -71,8 +71,8 @@ func LoadOrCreateConfig() (ClientConfig, error) {
 
 	// Generate new UUID
 	cfg.ClientID = uuid.New().String()
-	cfg.UpdateInterval = 30     // Set default update interval
-	cfg.DisableCommands = false // Default: commands are enabled
+	cfg.StatusUpdateInterval = 5 * time.Second // Set default update interval
+	cfg.DisableCommands = false                // Default: commands are enabled
 
 	// Set sensible defaults for IP validation (more permissive for better UX)
 	cfg.StrictIPValidation = false  // Don't require exact IP match by default
@@ -100,8 +100,8 @@ func ValidateConfig(cfg ClientConfig) error {
 	if cfg.ClientID == "" {
 		return errors.New("missing client_id")
 	}
-	if cfg.UpdateInterval <= 0 {
-		return errors.New("update_interval must be greater than 0")
+	if cfg.StatusUpdateInterval <= 0 {
+		return errors.New("status_update_interval must be greater than 0")
 	}
 	if cfg.MaxIPViolations < 0 {
 		return errors.New("max_ip_violations must be non-negative")
@@ -149,11 +149,12 @@ func LoadEnv() {
 
 // ApplyEnvironmentOverrides applies environment variable overrides to the config
 func (cfg *ClientConfig) ApplyEnvironmentOverrides() {
-	if updateInterval := os.Getenv("MSM_UPDATE_INTERVAL"); updateInterval != "" {
-		if val, err := strconv.Atoi(updateInterval); err == nil && val > 0 {
-			cfg.UpdateInterval = val
+	if updateStatusInterval := os.Getenv("MSM_STATUS_UPDATE_INTERVAL"); updateStatusInterval != "" {
+		if duration, err := time.ParseDuration(updateStatusInterval); err == nil && duration > 0 {
+			cfg.StatusUpdateInterval = duration
 		} else {
-			fmt.Printf("Warning: Invalid MSM_UPDATE_INTERVAL value '%s', ignoring\n", updateInterval)
+			fmt.Printf("Warning: Invalid MSM_STATUS_UPDATE_INTERVAL value '%s', using default\n", updateStatusInterval)
+			cfg.StatusUpdateInterval = 5 * time.Second // Default value
 		}
 	}
 
@@ -253,6 +254,13 @@ func (cfg *ClientConfig) DisableAllIPValidation() {
 	cfg.StrictIPValidation = false
 	cfg.AllowIPSubnetMatch = false
 	cfg.DisableIPValidation = true
+}
+
+func (cfg *ClientConfig) GetStatusUpdateInterval() time.Duration {
+	if cfg.StatusUpdateInterval <= 0 {
+		return 5 * time.Second // Default value
+	}
+	return cfg.StatusUpdateInterval
 }
 
 // GetIPValidationMode returns a string describing the current IP validation mode
