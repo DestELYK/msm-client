@@ -68,13 +68,27 @@ const (
 	StatusError        ResponseStatus = "error"
 )
 
-const SCREEN_SWITCH_PATH = "/usr/local/bin/mediascreen-installer/scripts/screen-switch.sh"
-
 // NewWebSocketManager creates a new WebSocketManager instance
 func NewWebSocketManager() *WebSocketManager {
 	return &WebSocketManager{
 		TestMode: isTestEnvironment(),
 	}
+}
+
+// executeScreenCommand executes a screen command with the configured path
+func (wsm *WebSocketManager) executeScreenCommand(args ...string) ([]byte, error) {
+	screenSwitchPath := wsm.clientConfig.GetScreenSwitchPath()
+
+	if _, err := os.Stat(screenSwitchPath); err == nil {
+		log.Printf("ms-switch binary found at %s", screenSwitchPath)
+	} else if os.IsNotExist(err) {
+		log.Printf("ms-switch binary not found at %s", screenSwitchPath)
+	} else {
+		log.Printf("Error checking ms-switch binary: %v", err)
+	}
+
+	cmd := exec.Command(screenSwitchPath, args...)
+	return cmd.CombinedOutput()
 }
 
 // generateStatusData creates a status data map with current client information
@@ -471,76 +485,7 @@ func (wsm *WebSocketManager) handleCommand(c *websocket.Conn, message map[string
 	case CommandScreenList:
 		log.Println("Screen list command received - would return list of screens")
 
-		if !isTestEnvironment() {
-			if _, err := os.Stat(SCREEN_SWITCH_PATH); err == nil {
-				log.Printf("ms-switch binary found at %s", SCREEN_SWITCH_PATH)
-			} else if os.IsNotExist(err) {
-				log.Printf("ms-switch binary not found at %s", SCREEN_SWITCH_PATH)
-			} else {
-				log.Printf("Error checking ms-switch binary: %v", err)
-			}
-
-			cmd := exec.Command(SCREEN_SWITCH_PATH, "list")
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				log.Printf("Failed to execute ms-switch list command: %v", err)
-				log.Printf("Command output: %s", output)
-				wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
-					"command":    CommandScreenList,
-					"command_id": commandID,
-					"status":     StatusError,
-					"message":    "Failed to execute ms-switch list command",
-				})
-				return
-			}
-			log.Printf("ms-switch list output: %s", output)
-
-			// Parse output into a list of screens
-			screens := []map[string]interface{}{}
-			lines := utils.SplitLines(string(output))
-			for _, line := range lines {
-				line = strings.TrimSpace(line)
-				// Look for TTY terminal lines (format: "  1. TTY 1  [CURRENT] (active) - autologin: mediascreen")
-				if strings.Contains(line, "TTY ") && (strings.Contains(line, "(active)") || strings.Contains(line, "(inactive)")) {
-					// Extract TTY number and status
-					parts := strings.Fields(line)
-					if len(parts) >= 3 {
-						ttyNumber := strings.TrimSuffix(parts[0], ".")
-						ttyName := parts[1] + " " + parts[2] // "TTY X"
-
-						// Determine if current and active
-						isCurrent := strings.Contains(line, "[CURRENT]")
-						isActive := strings.Contains(line, "(active)")
-
-						// Extract autologin user if present
-						autologinUser := ""
-						if strings.Contains(line, "autologin:") {
-							autologinParts := strings.Split(line, "autologin:")
-							if len(autologinParts) > 1 {
-								autologinUser = strings.TrimSpace(autologinParts[1])
-							}
-						}
-
-						screen := map[string]interface{}{
-							"id":             ttyNumber,
-							"name":           ttyName,
-							"is_current":     isCurrent,
-							"is_active":      isActive,
-							"autologin_user": autologinUser,
-						}
-						screens = append(screens, screen)
-					}
-				}
-			}
-			log.Printf("Parsed screens: %v", screens)
-			wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
-				"command":    CommandScreenList,
-				"command_id": commandID,
-				"status":     StatusSuccess,
-				"message":    "Screen list command received",
-				"data":       map[string]interface{}{"screens": screens, "count": len(screens)},
-			})
-		} else {
+		if isTestEnvironment() {
 			log.Println("Test mode: Screen list command acknowledged but not executed")
 			wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
 				"command":    CommandScreenList,
@@ -571,7 +516,68 @@ func (wsm *WebSocketManager) handleCommand(c *websocket.Conn, message map[string
 					},
 				},
 			})
+			return
 		}
+
+		output, err := wsm.executeScreenCommand("list")
+		if err != nil {
+			log.Printf("Failed to execute ms-switch list command: %v", err)
+			log.Printf("Command output: %s", output)
+			wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
+				"command":    CommandScreenList,
+				"command_id": commandID,
+				"status":     StatusError,
+				"message":    "Failed to execute ms-switch list command",
+			})
+			return
+		}
+		log.Printf("ms-switch list output: %s", output)
+
+		// Parse output into a list of screens
+		screens := []map[string]interface{}{}
+		lines := utils.SplitLines(string(output))
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			// Look for TTY terminal lines (format: "  1. TTY 1  [CURRENT] (active) - autologin: mediascreen")
+			if strings.Contains(line, "TTY ") && (strings.Contains(line, "(active)") || strings.Contains(line, "(inactive)")) {
+				// Extract TTY number and status
+				parts := strings.Fields(line)
+				if len(parts) >= 3 {
+					ttyNumber := strings.TrimSuffix(parts[0], ".")
+					ttyName := parts[1] + " " + parts[2] // "TTY X"
+
+					// Determine if current and active
+					isCurrent := strings.Contains(line, "[CURRENT]")
+					isActive := strings.Contains(line, "(active)")
+
+					// Extract autologin user if present
+					autologinUser := ""
+					if strings.Contains(line, "autologin:") {
+						autologinParts := strings.Split(line, "autologin:")
+						if len(autologinParts) > 1 {
+							autologinUser = strings.TrimSpace(autologinParts[1])
+						}
+					}
+
+					screen := map[string]interface{}{
+						"id":             ttyNumber,
+						"name":           ttyName,
+						"is_current":     isCurrent,
+						"is_active":      isActive,
+						"autologin_user": autologinUser,
+					}
+					screens = append(screens, screen)
+				}
+			}
+		}
+		log.Printf("Parsed screens: %v", screens)
+		wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
+			"command":    CommandScreenList,
+			"command_id": commandID,
+			"status":     StatusSuccess,
+			"message":    "Screen list command received",
+			"data":       map[string]interface{}{"screens": screens, "count": len(screens)},
+		})
 	case CommandScreenSwitch:
 		log.Printf("Screen switch command received: %v", message)
 		if !hasParams {
@@ -599,35 +605,7 @@ func (wsm *WebSocketManager) handleCommand(c *websocket.Conn, message map[string
 		}
 
 		log.Printf("Switching to screen: %s", screenID)
-		if !isTestEnvironment() {
-			if _, err := os.Stat(SCREEN_SWITCH_PATH); err == nil {
-				log.Printf("ms-switch binary found at %s", SCREEN_SWITCH_PATH)
-			} else if os.IsNotExist(err) {
-				log.Printf("ms-switch binary not found at %s", SCREEN_SWITCH_PATH)
-			} else {
-				log.Printf("Error checking ms-switch binary: %v", err)
-			}
-			cmd := exec.Command(SCREEN_SWITCH_PATH, screenID)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				log.Printf("Failed to execute ms-switch switch command: %v", err)
-				log.Printf("Command output: %s", output)
-				wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
-					"command":    CommandScreenSwitch,
-					"command_id": commandID,
-					"status":     StatusError,
-					"message":    "Failed to execute ms-switch switch command",
-				})
-				return
-			}
-			log.Printf("ms-switch switch output: %s", output)
-			wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
-				"command":    CommandScreenSwitch,
-				"command_id": commandID,
-				"status":     StatusSuccess,
-				"message":    "Screen switch command executed successfully",
-			})
-		} else {
+		if isTestEnvironment() {
 			log.Println("Test mode: Screen switch command acknowledged but not executed")
 			wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
 				"command":    CommandScreenSwitch,
@@ -635,7 +613,28 @@ func (wsm *WebSocketManager) handleCommand(c *websocket.Conn, message map[string
 				"status":     StatusSuccess,
 				"message":    "Screen switch command received, would switch to screen",
 			})
+			return
 		}
+
+		output, err := wsm.executeScreenCommand(screenID)
+		if err != nil {
+			log.Printf("Failed to execute ms-switch switch command: %v", err)
+			log.Printf("Command output: %s", output)
+			wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
+				"command":    CommandScreenSwitch,
+				"command_id": commandID,
+				"status":     StatusError,
+				"message":    "Failed to execute ms-switch switch command",
+			})
+			return
+		}
+		log.Printf("ms-switch switch output: %s", output)
+		wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
+			"command":    CommandScreenSwitch,
+			"command_id": commandID,
+			"status":     StatusSuccess,
+			"message":    "Screen switch command executed successfully",
+		})
 	case CommandScreenReload:
 		log.Println("Screen refresh command received - would refresh screen")
 		if !hasParams {
@@ -662,35 +661,7 @@ func (wsm *WebSocketManager) handleCommand(c *websocket.Conn, message map[string
 			return
 		}
 		log.Printf("Refreshing screen: %s", screenID)
-		if !isTestEnvironment() {
-			if _, err := os.Stat(SCREEN_SWITCH_PATH); err == nil {
-				log.Printf("ms-switch binary found at %s", SCREEN_SWITCH_PATH)
-			} else if os.IsNotExist(err) {
-				log.Printf("ms-switch binary not found at %s", SCREEN_SWITCH_PATH)
-			} else {
-				log.Printf("Error checking ms-switch binary: %v", err)
-			}
-			cmd := exec.Command(SCREEN_SWITCH_PATH, "reload", screenID)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				log.Printf("Failed to execute ms-switch refresh command: %v", err)
-				log.Printf("Command output: %s", output)
-				wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
-					"command":    CommandScreenReload,
-					"command_id": commandID,
-					"status":     StatusError,
-					"message":    "Failed to execute ms-switch refresh command",
-				})
-				return
-			}
-			log.Printf("ms-switch refresh output: %s", output)
-			wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
-				"command":    CommandScreenReload,
-				"command_id": commandID,
-				"status":     StatusSuccess,
-				"message":    "Screen refresh command executed successfully",
-			})
-		} else {
+		if isTestEnvironment() {
 			log.Println("Test mode: Screen refresh command acknowledged but not executed")
 			wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
 				"command":    CommandScreenReload,
@@ -698,7 +669,28 @@ func (wsm *WebSocketManager) handleCommand(c *websocket.Conn, message map[string
 				"status":     StatusSuccess,
 				"message":    "Screen refresh command received, would refresh screen",
 			})
+			return
 		}
+
+		output, err := wsm.executeScreenCommand("reload", screenID)
+		if err != nil {
+			log.Printf("Failed to execute ms-switch refresh command: %v", err)
+			log.Printf("Command output: %s", output)
+			wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
+				"command":    CommandScreenReload,
+				"command_id": commandID,
+				"status":     StatusError,
+				"message":    "Failed to execute ms-switch refresh command",
+			})
+			return
+		}
+		log.Printf("ms-switch refresh output: %s", output)
+		wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{
+			"command":    CommandScreenReload,
+			"command_id": commandID,
+			"status":     StatusSuccess,
+			"message":    "Screen refresh command executed successfully",
+		})
 	default:
 		log.Printf("Unknown command: %s", command)
 		wsm.sendResponse(c, MessageTypeCommandResponse, map[string]interface{}{

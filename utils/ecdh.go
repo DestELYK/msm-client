@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
-	"log"
 	"sync"
 
 	"golang.org/x/crypto/hkdf"
@@ -26,26 +25,18 @@ func GenerateECDHKeyPair() error {
 	ecdhMutex.Lock()
 	defer ecdhMutex.Unlock()
 
-	log.Println("Generating new ECDH key pair...")
-
 	// Use P-256 curve for ECDH
 	curve := ecdh.P256()
-	log.Println("Using P-256 curve for ECDH key generation")
 	privateKey, err := curve.GenerateKey(rand.Reader)
 	if err != nil {
 		return fmt.Errorf("failed to generate ECDH private key: %w", err)
 	}
-
-	log.Printf("Generated ECDH private key (length: %d bytes)", len(privateKey.Bytes()))
 
 	publicKey := privateKey.PublicKey().Bytes()
 
 	ecdhPrivateKey = privateKey
 	ecdhPublicKey = publicKey
 
-	log.Printf("Generated new ECDH private key (length: %d bytes)", len(ecdhPrivateKey.Bytes()))
-
-	log.Printf("Generated new ECDH key pair (public key length: %d bytes)", len(publicKey))
 	return nil
 }
 
@@ -69,7 +60,6 @@ func ClearECDHKeys() {
 	ecdhPublicKey = nil
 	sharedSecret = nil
 	sessionKey = nil
-	log.Printf("Cleared ECDH keys")
 }
 
 // DeriveSharedSecret performs ECDH key exchange with server's public key
@@ -100,7 +90,6 @@ func DeriveSharedSecret(serverPublicKeyB64 string) error {
 		return fmt.Errorf("ECDH key exchange failed: %w", err)
 	}
 
-	log.Printf("Derived shared secret (%d bytes)", len(sharedSecret))
 	return nil
 }
 
@@ -120,7 +109,6 @@ func DeriveSessionKey(info string) error {
 		return fmt.Errorf("failed to derive session key: %w", err)
 	}
 
-	log.Printf("Derived session key (%d bytes) with info: %s", len(sessionKey), info)
 	return nil
 }
 
