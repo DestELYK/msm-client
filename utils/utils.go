@@ -298,3 +298,27 @@ func GenerateCode(codeLength int) string {
 	}
 	return string(b)
 }
+
+func SplitLines(s string) []string {
+	lines := strings.Split(s, "\n")
+	var result []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+func TrimLines(s string) string {
+	lines := strings.Split(s, "\n")
+	var result []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return strings.Join(result, "\n")
+}
