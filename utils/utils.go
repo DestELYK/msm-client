@@ -1,6 +1,9 @@
 package utils
 
 import (
+	"crypto/rand"
+	"fmt"
+	"log"
 	"net"
 	"os"
 	"strconv"
@@ -255,4 +258,67 @@ func GetMacAddress(ip string) string {
 	}
 
 	return "00:00:00:00:00:00"
+}
+
+func GetUptime() int64 {
+	// Get the system uptime in seconds
+	uptime, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0 // Return 0 if we can't read uptime
+	}
+
+	// Parse the uptime value
+	var seconds float64
+	if _, err := fmt.Sscanf(string(uptime), "%f", &seconds); err != nil {
+		return 0 // Return 0 if parsing fails
+	}
+
+	return int64(seconds)
+}
+
+// GenerateCode generates a random pairing code
+func GenerateCode(codeLength int) string {
+	const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, codeLength)
+
+	// Generate random bytes in one call
+	randomBytes := make([]byte, codeLength)
+	if _, err := rand.Read(randomBytes); err != nil {
+		// Fallback to less secure method if crypto/rand fails
+		log.Printf("Warning: crypto/rand failed, using fallback: %v", err)
+		for i := range b {
+			b[i] = letters[i%len(letters)] // Very basic fallback
+		}
+		return string(b)
+	}
+
+	// Use random bytes to select from letters
+	for i := range b {
+		b[i] = letters[int(randomBytes[i])%len(letters)]
+	}
+	return string(b)
+}
+
+func SplitLines(s string) []string {
+	lines := strings.Split(s, "\n")
+	var result []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+func TrimLines(s string) string {
+	lines := strings.Split(s, "\n")
+	var result []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return strings.Join(result, "\n")
 }

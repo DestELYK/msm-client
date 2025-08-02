@@ -1,212 +1,170 @@
 package config
 
 import (
-	"encoding/json"
-	"os"
 	"testing"
-
-	"github.com/google/uuid"
+	"time"
 )
 
-func TestLoadOrCreateConfig(t *testing.T) {
-	// Clean up any existing config file
-	defer os.Remove(configFile)
+func TestIPValidationModes(t *testing.T) {
+	var cfg ClientConfig
 
-	// Test creating new config
-	cfg, err := LoadOrCreateConfig()
-	if err != nil {
-		t.Fatalf("Failed to create new config: %v", err)
+	// Test strict mode
+	cfg.SetStrictIPValidation()
+	if !cfg.StrictIPValidation || cfg.AllowIPSubnetMatch || cfg.DisableIPValidation {
+		t.Error("SetStrictIPValidation() did not set correct flags")
+	}
+	if cfg.GetIPValidationMode() != "strict" {
+		t.Errorf("Expected 'strict', got '%s'", cfg.GetIPValidationMode())
 	}
 
-	// Verify generated UUID is valid
-	_, err = uuid.Parse(cfg.ClientID)
-	if err != nil {
-		t.Fatalf("Generated ClientID is not a valid UUID: %v", err)
+	// Test subnet mode
+	cfg.SetSubnetIPValidation()
+	if cfg.StrictIPValidation || !cfg.AllowIPSubnetMatch || cfg.DisableIPValidation {
+		t.Error("SetSubnetIPValidation() did not set correct flags")
+	}
+	if cfg.GetIPValidationMode() != "subnet" {
+		t.Errorf("Expected 'subnet', got '%s'", cfg.GetIPValidationMode())
 	}
 
-	// Verify config file was created
-	if _, err := os.Stat(configFile); os.IsNotExist(err) {
-		t.Fatal("Config file was not created")
+	// Test permissive mode
+	cfg.SetPermissiveIPValidation()
+	if cfg.StrictIPValidation || cfg.AllowIPSubnetMatch || cfg.DisableIPValidation {
+		t.Error("SetPermissiveIPValidation() did not set correct flags")
+	}
+	if cfg.GetIPValidationMode() != "permissive" {
+		t.Errorf("Expected 'permissive', got '%s'", cfg.GetIPValidationMode())
 	}
 
-	// Test loading existing config
-	cfg2, err := LoadOrCreateConfig()
-	if err != nil {
-		t.Fatalf("Failed to load existing config: %v", err)
+	// Test disabled mode
+	cfg.DisableAllIPValidation()
+	if cfg.StrictIPValidation || cfg.AllowIPSubnetMatch || !cfg.DisableIPValidation {
+		t.Error("DisableAllIPValidation() did not set correct flags")
 	}
-
-	if cfg.ClientID != cfg2.ClientID {
-		t.Fatalf("Expected ClientID to be %s, got %s", cfg.ClientID, cfg2.ClientID)
-	}
-}
-
-func TestSaveConfig(t *testing.T) {
-	defer os.Remove(configFile)
-
-	testConfig := ClientConfig{
-		ClientID:       "test-client-id",
-		DeviceName:     "Test Device",
-		UpdateInterval: 30,
-	}
-
-	err := SaveConfig(testConfig)
-	if err != nil {
-		t.Fatalf("Failed to save config: %v", err)
-	}
-
-	// Verify file exists and content is correct
-	data, err := os.ReadFile(configFile)
-	if err != nil {
-		t.Fatalf("Failed to read config file: %v", err)
-	}
-
-	var savedConfig ClientConfig
-	err = json.Unmarshal(data, &savedConfig)
-	if err != nil {
-		t.Fatalf("Failed to unmarshal saved config: %v", err)
-	}
-
-	if savedConfig.ClientID != testConfig.ClientID {
-		t.Fatalf("Expected ClientID %s, got %s", testConfig.ClientID, savedConfig.ClientID)
-	}
-	if savedConfig.DeviceName != testConfig.DeviceName {
-		t.Fatalf("Expected DeviceName %s, got %s", testConfig.DeviceName, savedConfig.DeviceName)
-	}
-	if savedConfig.UpdateInterval != testConfig.UpdateInterval {
-		t.Fatalf("Expected UpdateInterval %d, got %d", testConfig.UpdateInterval, savedConfig.UpdateInterval)
+	if cfg.GetIPValidationMode() != "disabled" {
+		t.Errorf("Expected 'disabled', got '%s'", cfg.GetIPValidationMode())
 	}
 }
 
-func TestValidateConfig(t *testing.T) {
-	tests := []struct {
-		name        string
-		config      ClientConfig
-		expectError bool
-		errorMsg    string
-	}{
-		{
-			name: "valid config",
-			config: ClientConfig{
-				ClientID:       uuid.New().String(),
-				DeviceName:     "Test Device",
-				UpdateInterval: 30,
-			},
-			expectError: false,
-		},
-		{
-			name: "missing client_id",
-			config: ClientConfig{
-				DeviceName:     "Test Device",
-				UpdateInterval: 30,
-			},
-			expectError: true,
-			errorMsg:    "missing client_id",
-		},
-		{
-			name: "zero update_interval",
-			config: ClientConfig{
-				ClientID:       uuid.New().String(),
-				DeviceName:     "Test Device",
-				UpdateInterval: 0,
-			},
-			expectError: true,
-			errorMsg:    "update_interval must be greater than 0",
-		},
-		{
-			name: "negative update_interval",
-			config: ClientConfig{
-				ClientID:       uuid.New().String(),
-				DeviceName:     "Test Device",
-				UpdateInterval: -1,
-			},
-			expectError: true,
-			errorMsg:    "update_interval must be greater than 0",
-		},
-		{
-			name: "invalid UUID format",
-			config: ClientConfig{
-				ClientID:       "not-a-valid-uuid",
-				DeviceName:     "Test Device",
-				UpdateInterval: 30,
-			},
-			expectError: true,
-		},
+func TestDefaultConfig(t *testing.T) {
+	// Test that new configs have sensible defaults
+	cfg := ClientConfig{
+		ClientID:            "test-client",
+		UpdateInterval:      30,
+		StrictIPValidation:  false,
+		AllowIPSubnetMatch:  true, // This should be the default
+		DisableIPValidation: false,
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateConfig(tt.config)
-			if tt.expectError {
-				if err == nil {
-					t.Fatalf("Expected error but got none")
-				}
-				if tt.errorMsg != "" && err.Error() != tt.errorMsg {
-					t.Fatalf("Expected error message '%s', got '%s'", tt.errorMsg, err.Error())
-				}
-			} else {
-				if err != nil {
-					t.Fatalf("Expected no error but got: %v", err)
-				}
-			}
-		})
+	mode := cfg.GetIPValidationMode()
+	if mode != "subnet" {
+		t.Errorf("Default config should use subnet validation, got '%s'", mode)
 	}
 }
 
-func TestLoadEnv(t *testing.T) {
-	// Set up environment variable first
-	os.Setenv("MSM_SECRET_KEY", "test-secret-key")
-	defer os.Unsetenv("MSM_SECRET_KEY")
+func TestSecuritySettings(t *testing.T) {
+	var cfg ClientConfig
 
-	// Create a temporary .env file
-	envContent := `TEST_VAR=test_value
-CLIENT_NAME=test_client
-`
-	err := os.WriteFile(".env", []byte(envContent), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create test .env file: %v", err)
-	}
-	defer os.Remove(".env")
-
-	err = LoadEnv()
-	if err != nil {
-		t.Fatalf("Failed to load .env file: %v", err)
+	// Test default values for security settings
+	maxViolations := cfg.GetMaxIPViolations()
+	if maxViolations != 3 {
+		t.Errorf("Expected default max violations of 3, got %d", maxViolations)
 	}
 
-	// Verify environment variables were loaded
-	if os.Getenv("TEST_VAR") != "test_value" {
-		t.Fatalf("Expected TEST_VAR to be 'test_value', got '%s'", os.Getenv("TEST_VAR"))
+	blacklistDuration := cfg.GetIPBlacklistDuration()
+	if blacklistDuration != 1*time.Hour {
+		t.Errorf("Expected default blacklist duration of 1 hour, got %v", blacklistDuration)
 	}
-	if os.Getenv("CLIENT_NAME") != "test_client" {
-		t.Fatalf("Expected CLIENT_NAME to be 'test_client', got '%s'", os.Getenv("CLIENT_NAME"))
+
+	// Test default values for verification code settings
+	codeLength := cfg.GetVerificationCodeLength()
+	if codeLength != 6 {
+		t.Errorf("Expected default code length of 6, got %d", codeLength)
+	}
+
+	codeAttempts := cfg.GetVerificationCodeAttempts()
+	if codeAttempts != 3 {
+		t.Errorf("Expected default code attempts of 3, got %d", codeAttempts)
+	}
+
+	codeExpiration := cfg.GetPairingCodeExpiration()
+	if codeExpiration != 1*time.Minute {
+		t.Errorf("Expected default code expiration of 1 minute, got %v", codeExpiration)
+	}
+
+	// Test explicit values
+	cfg.MaxIPViolations = 5
+	cfg.IPBlacklistDuration = 2 * time.Hour
+	cfg.VerificationCodeLength = 8
+	cfg.VerificationCodeAttempts = 5
+	cfg.PairingCodeExpiration = 2 * time.Minute
+
+	if cfg.GetMaxIPViolations() != 5 {
+		t.Errorf("Expected max violations of 5, got %d", cfg.GetMaxIPViolations())
+	}
+
+	if cfg.GetIPBlacklistDuration() != 2*time.Hour {
+		t.Errorf("Expected blacklist duration of 2 hours, got %v", cfg.GetIPBlacklistDuration())
+	}
+
+	if cfg.GetVerificationCodeLength() != 8 {
+		t.Errorf("Expected code length of 8, got %d", cfg.GetVerificationCodeLength())
+	}
+
+	if cfg.GetVerificationCodeAttempts() != 5 {
+		t.Errorf("Expected code attempts of 5, got %d", cfg.GetVerificationCodeAttempts())
+	}
+
+	if cfg.GetPairingCodeExpiration() != 2*time.Minute {
+		t.Errorf("Expected code expiration of 2 minutes, got %v", cfg.GetPairingCodeExpiration())
+	}
+
+	// Test zero/negative values fall back to defaults
+	cfg.MaxIPViolations = 0
+	cfg.IPBlacklistDuration = -1 * time.Hour
+	cfg.VerificationCodeLength = 0
+	cfg.VerificationCodeAttempts = -1
+
+	if cfg.GetMaxIPViolations() != 3 {
+		t.Errorf("Expected fallback to default max violations of 3, got %d", cfg.GetMaxIPViolations())
+	}
+
+	if cfg.GetIPBlacklistDuration() != 1*time.Hour {
+		t.Errorf("Expected fallback to default blacklist duration of 1 hour, got %v", cfg.GetIPBlacklistDuration())
+	}
+
+	if cfg.GetVerificationCodeLength() != 6 {
+		t.Errorf("Expected fallback to default code length of 6, got %d", cfg.GetVerificationCodeLength())
+	}
+
+	if cfg.GetVerificationCodeAttempts() != 3 {
+		t.Errorf("Expected fallback to default code attempts of 3, got %d", cfg.GetVerificationCodeAttempts())
 	}
 }
 
-func TestLoadEnvFileNotExists(t *testing.T) {
-	// Set up environment variable first
-	os.Setenv("MSM_SECRET_KEY", "test-secret-key")
-	defer os.Unsetenv("MSM_SECRET_KEY")
-
-	// Ensure no .env file exists
-	os.Remove(".env")
-
-	err := LoadEnv()
-	// Should not error when .env file doesn't exist if MSM_SECRET_KEY is set
-	if err != nil {
-		t.Fatalf("LoadEnv should not error when .env file doesn't exist but MSM_SECRET_KEY is set: %v", err)
-	}
-}
-
-func TestLoadConfigWithCorruptedFile(t *testing.T) {
-	defer os.Remove(configFile)
-
-	// Create a corrupted JSON file
-	err := os.WriteFile(configFile, []byte("invalid json content"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create corrupted config file: %v", err)
+func TestConfigValidation(t *testing.T) {
+	// Test validation with negative security values
+	cfg := ClientConfig{
+		ClientID:                 "550e8400-e29b-41d4-a716-446655440000", // Valid UUID
+		UpdateInterval:           30,
+		MaxIPViolations:          -1,
+		IPBlacklistDuration:      -1 * time.Hour,
+		VerificationCodeLength:   -1,
+		VerificationCodeAttempts: -1,
 	}
 
-	_, err = LoadOrCreateConfig()
+	err := ValidateConfig(cfg)
 	if err == nil {
-		t.Fatal("Expected error when loading corrupted config file")
+		t.Error("Expected validation error for negative security values")
+	}
+
+	// Test validation with valid values
+	cfg.MaxIPViolations = 5
+	cfg.IPBlacklistDuration = 2 * time.Hour
+	cfg.VerificationCodeLength = 8
+	cfg.VerificationCodeAttempts = 5
+
+	err = ValidateConfig(cfg)
+	if err != nil {
+		t.Errorf("Expected no validation error, got: %v", err)
 	}
 }

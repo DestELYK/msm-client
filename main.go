@@ -17,10 +17,14 @@ import (
 	"github.com/akamensky/argparse"
 )
 
+const DEFAULT_PAIRING_PORT = 49174 // Default port for pairing server
+
 // Global variables for graceful shutdown
 var (
 	shutdownMutex  sync.Mutex
 	isShuttingDown bool
+	wsm            = ws.NewWebSocketManager()    // WebSocket manager instance
+	pm             = pairing.NewPairingManager() // Pairing manager instance
 )
 
 // setupSignalHandler sets up graceful shutdown on interrupt signals
@@ -47,18 +51,17 @@ func gracefulShutdown() {
 	log.Println("Graceful shutdown initiated...")
 
 	// Disconnect WebSocket if connected
-	if ws.IsConnected() {
+	if wsm.IsConnected() {
 		log.Println("Disconnecting WebSocket...")
-		conn := ws.GetConnection()
-		if conn != nil {
-			ws.DisconnectWebSocket(conn)
-		}
+		wsm.ShutdownWebSocket(true)
 		time.Sleep(100 * time.Millisecond) // Allow time for disconnect message
 	}
 
 	// Stop pairing server
-	log.Println("Stopping pairing server...")
-	pairing.StopPairingServer()
+	if pm.IsServerRunning() {
+		log.Println("Stopping pairing server...")
+		pm.StopPairingServer()
+	}
 
 	log.Println("Shutdown complete")
 }
@@ -70,6 +73,44 @@ func main() {
 	disableCommandsFlag := startCmd.Flag("", "disable-commands", &argparse.Options{
 		Required: false,
 		Help:     "Disable execution of remote commands (reboot, etc.) for security",
+	})
+	enableDisplayFlag := startCmd.Flag("", "enable-display", &argparse.Options{
+		Required: false,
+		Help:     "Enable pairing display server at /display endpoint",
+	})
+	pairingPortFlag := startCmd.Int("", "pairing-port", &argparse.Options{
+		Required: false,
+		Default:  DEFAULT_PAIRING_PORT,
+		Help:     "Specify the port for the pairing server (default is 49174)",
+	})
+	ipValidationFlag := startCmd.String("", "ip-validation", &argparse.Options{
+		Required: false,
+		Default:  "subnet",
+		Help:     "Set IP validation mode for pairing: strict, subnet, permissive, or disabled",
+	})
+	maxIPViolationsFlag := startCmd.Int("", "max-ip-violations", &argparse.Options{
+		Required: false,
+		Help:     "Maximum IP violations before blacklisting (default: 3)",
+	})
+	ipBlacklistDurationFlag := startCmd.String("", "ip-blacklist-duration", &argparse.Options{
+		Required: false,
+		Help:     "Duration to blacklist violating IPs (e.g., '1h', '30m', '2h30m')",
+	})
+	verificationCodeLengthFlag := startCmd.Int("", "verification-code-length", &argparse.Options{
+		Required: false,
+		Help:     "Length of verification/pairing code (default: 6)",
+	})
+	verificationCodeAttemptsFlag := startCmd.Int("", "verification-code-attempts", &argparse.Options{
+		Required: false,
+		Help:     "Maximum attempts for verification/pairing code (default: 3)",
+	})
+	pairingCodeExpirationFlag := startCmd.String("", "pairing-code-expiration", &argparse.Options{
+		Required: false,
+		Help:     "Duration before pairing codes expire (e.g., '1m', '30s', '2m30s')",
+	})
+	screenSwitchPathFlag := startCmd.String("", "screen-switch-path", &argparse.Options{
+		Required: false,
+		Help:     "Path to screen switch script (default: /usr/local/bin/mediascreen-installer/scripts/screen-switch.sh)",
 	})
 
 	// Pairing command
@@ -101,19 +142,82 @@ func main() {
 			os.Exit(0)
 		}()
 
-		if err := config.LoadEnv(); err != nil {
-			log.Fatalf("Error loading environment variables: %v", err)
-		}
+		config.LoadEnv()
 
 		cfg, err := config.LoadOrCreateConfig()
 		if err != nil {
 			log.Fatalf("Invalid config: %v", err)
 		}
 
+		// Apply environment variable overrides
+		cfg.ApplyEnvironmentOverrides()
+
 		// Set command execution flag based on command line argument
 		if *disableCommandsFlag {
 			cfg.DisableCommands = true
 			log.Println("Command execution disabled via command line flag")
+		}
+
+		// Set IP validation mode based on command line argument
+		if ipValidationFlag != nil && *ipValidationFlag != "" {
+			switch *ipValidationFlag {
+			case "strict":
+				cfg.SetStrictIPValidation()
+				log.Println("IP validation mode set to: strict (exact IP match required)")
+			case "subnet":
+				cfg.SetSubnetIPValidation()
+				log.Println("IP validation mode set to: subnet (same subnet allowed)")
+			case "permissive":
+				cfg.SetPermissiveIPValidation()
+				log.Println("IP validation mode set to: permissive (flexible validation)")
+			case "disabled":
+				cfg.DisableAllIPValidation()
+				log.Println("IP validation mode set to: disabled (no IP checking)")
+			default:
+				log.Printf("Invalid IP validation mode '%s', using current setting: %s", *ipValidationFlag, cfg.GetIPValidationMode())
+			}
+		} else {
+			log.Printf("IP validation mode: %s", cfg.GetIPValidationMode())
+		}
+
+		// Set security settings based on command line arguments
+		if maxIPViolationsFlag != nil && *maxIPViolationsFlag > 0 {
+			cfg.MaxIPViolations = *maxIPViolationsFlag
+			log.Printf("Max IP violations set to: %d", cfg.MaxIPViolations)
+		}
+
+		if ipBlacklistDurationFlag != nil && *ipBlacklistDurationFlag != "" {
+			if duration, err := time.ParseDuration(*ipBlacklistDurationFlag); err == nil && duration >= 0 {
+				cfg.IPBlacklistDuration = duration
+				log.Printf("IP blacklist duration set to: %v", cfg.IPBlacklistDuration)
+			} else {
+				log.Printf("Invalid IP blacklist duration '%s', using current setting: %v", *ipBlacklistDurationFlag, cfg.GetIPBlacklistDuration())
+			}
+		}
+
+		// Set verification code settings based on command line arguments
+		if verificationCodeLengthFlag != nil && *verificationCodeLengthFlag > 0 {
+			cfg.VerificationCodeLength = *verificationCodeLengthFlag
+			log.Printf("Verification code length set to: %d", cfg.VerificationCodeLength)
+		}
+
+		if verificationCodeAttemptsFlag != nil && *verificationCodeAttemptsFlag > 0 {
+			cfg.VerificationCodeAttempts = *verificationCodeAttemptsFlag
+			log.Printf("Verification code attempts set to: %d", cfg.VerificationCodeAttempts)
+		}
+
+		if pairingCodeExpirationFlag != nil && *pairingCodeExpirationFlag != "" {
+			if duration, err := time.ParseDuration(*pairingCodeExpirationFlag); err == nil && duration > 0 {
+				cfg.PairingCodeExpiration = duration
+				log.Printf("Pairing code expiration set to: %v", cfg.PairingCodeExpiration)
+			} else {
+				log.Printf("Invalid pairing code expiration '%s', using current setting: %v", *pairingCodeExpirationFlag, cfg.GetPairingCodeExpiration())
+			}
+		}
+
+		if screenSwitchPathFlag != nil && *screenSwitchPathFlag != "" {
+			cfg.ScreenSwitchPath = *screenSwitchPathFlag
+			log.Printf("Screen switch path set to: %s", cfg.ScreenSwitchPath)
 		}
 
 		log.Println("MSM Client started. Press Ctrl+C to exit gracefully.")
@@ -130,7 +234,14 @@ func main() {
 				}
 				shutdownMutex.Unlock()
 
-				ws.ConnectWebSocket(cfg, savedState.ServerWs, savedState.Token)
+				wsm.ConnectWebSocket(cfg, savedState.ServerWs)
+
+				shutdownMutex.Lock()
+				if isShuttingDown {
+					shutdownMutex.Unlock()
+					break
+				}
+				shutdownMutex.Unlock()
 
 				// If ConnectWebSocket returns, it means the connection was lost
 				// and the state file was deleted (triggering restart)
@@ -164,14 +275,17 @@ func main() {
 			}
 			shutdownMutex.Unlock()
 
-			pairing.StartPairingServer(cfg)
+			if *enableDisplayFlag {
+				log.Println("Pairing display enabled - web interface available at /display")
+			}
+			pm.StartPairingServerOnPort(cfg, *pairingPortFlag, *enableDisplayFlag)
 
 			// After pairing server stops, check if we now have saved state
 			// This happens when pairing was successful
 			pairedState, stateErr := state.LoadState()
 			if stateErr == nil {
 				log.Printf("Pairing completed! Connecting to %s", pairedState.ServerWs)
-				ws.ConnectWebSocket(cfg, pairedState.ServerWs, pairedState.Token)
+				wsm.ConnectWebSocket(cfg, pairedState.ServerWs)
 				// If we get here, the WebSocket connection ended and might need to restart pairing
 				continue
 			} else {
@@ -186,11 +300,11 @@ func main() {
 		if getCmd.Happened() {
 			if *getWatchFlag {
 				fmt.Println("Watching for pairing code changes...")
-				pairing.WatchPairingCode(5 * time.Second)
+				pm.WatchPairingCode(5 * time.Second)
 				return
 			}
 
-			code, expiry := pairing.GetPairingCode()
+			code, expiry := pm.GetPairingCode()
 			if code == "" {
 				fmt.Println("No pairing code available or it has expired.")
 				return
@@ -205,7 +319,7 @@ func main() {
 				return
 			}
 
-			pairingCodeErr := pairing.DeletePairingCode()
+			pairingCodeErr := pm.DeletePairingCode()
 			if pairingCodeErr != nil {
 				log.Fatalf("Failed to reset pairing: %v", pairingCodeErr)
 			}
