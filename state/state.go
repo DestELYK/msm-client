@@ -11,7 +11,7 @@ type PairedState struct {
 	SessionKey string `json:"session_key,omitempty"` // Base64-encoded session key for WebSocket encryption
 }
 
-const DEFAULT_PATH = "/var/lib/msm-client" // Default path for state file
+const defaultPath = "/var/lib/msm-client" // Default path for state file
 const stateFile = "paired.json"
 
 // getStatePath returns the path for the state file based on environment variable or default
@@ -19,7 +19,7 @@ func getStatePath() string {
 	if path := os.Getenv("MSC_STATE_PATH"); path != "" {
 		return filepath.Join(path, stateFile)
 	}
-	return filepath.Join(DEFAULT_PATH, stateFile)
+	return filepath.Join(defaultPath, stateFile)
 }
 
 func SaveState(state PairedState) error {
@@ -57,8 +57,11 @@ func HasState() bool {
 }
 
 func DeleteState() error {
-	statePath := getStatePath()
-	return os.Remove(statePath)
+	err := os.Remove(getStatePath())
+	if os.IsNotExist(err) {
+		return nil // Ignore error if file does not exist
+	}
+	return err
 }
 
 // GetSessionKey returns the session key from the saved state, or empty string if not available

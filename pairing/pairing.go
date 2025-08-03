@@ -847,12 +847,12 @@ func (pm *PairingManager) SavePairingCode(code string) error {
 		}
 	}
 
-	return utils.WriteFile(pairingPath, []byte(code))
+	return os.WriteFile(pairingPath, []byte(code), 0600)
 }
 
 func (pm *PairingManager) LoadPairingCode() (string, error) {
 	pairingPath := getPairingPath()
-	data, err := utils.ReadFile(pairingPath)
+	data, err := os.ReadFile(pairingPath)
 	if err != nil {
 		return "", err
 	}
@@ -861,7 +861,12 @@ func (pm *PairingManager) LoadPairingCode() (string, error) {
 
 func (pm *PairingManager) DeletePairingCode() error {
 	pairingPath := getPairingPath()
-	return utils.DeleteFile(pairingPath)
+
+	if err := os.Remove(pairingPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to delete pairing code file: %w", err)
+	}
+
+	return nil
 }
 
 // GetBlacklistStatus returns the current blacklist status

@@ -142,15 +142,10 @@ func main() {
 			os.Exit(0)
 		}()
 
-		config.LoadEnv()
-
 		cfg, err := config.LoadOrCreateConfig()
 		if err != nil {
 			log.Fatalf("Invalid config: %v", err)
 		}
-
-		// Apply environment variable overrides
-		cfg.ApplyEnvironmentOverrides()
 
 		// Set command execution flag based on command line argument
 		if *disableCommandsFlag {

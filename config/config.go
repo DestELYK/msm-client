@@ -16,8 +16,8 @@ import (
 
 type ClientConfig struct {
 	ClientID             string        `json:"client_id"`
-	StatusUpdateInterval time.Duration `json:"update_interval,omitempty"`  // How often to send status updates (default: 5 seconds)
-	DisableCommands      bool          `json:"disable_commands,omitempty"` // Disable remote command execution
+	StatusUpdateInterval time.Duration `json:"status_update_interval,omitempty"` // How often to send status updates (default: 5 seconds)
+	DisableCommands      bool          `json:"disable_commands,omitempty"`       // Disable remote command execution
 
 	VerificationCodeLength   int `json:"verification_code_length,omitempty"`   // Length of verification code (default: 6)
 	VerificationCodeAttempts int `json:"verification_code_attempts,omitempty"` // Max attempts for verification code (default: 3)
@@ -43,56 +43,91 @@ type ClientConfig struct {
 	IPBlacklistDuration time.Duration `json:"ip_blacklist_duration,omitempty"` // How long to blacklist an IP (default: 1 hour)
 }
 
-const DEFAULT_PATH = "/etc/msm-client" // Default path for config file
+const defaultPath = "/etc/msm-client" // Default path for config file
 
 const configFile = "client.json"
+
+// defaultConfig contains all default configuration values
+var defaultConfig = ClientConfig{
+	StatusUpdateInterval:     5 * time.Second,
+	DisableCommands:          false,
+	VerificationCodeLength:   6,
+	VerificationCodeAttempts: 3,
+	PairingCodeExpiration:    2 * time.Minute,
+	ScreenSwitchPath:         "/usr/local/bin/mediascreen-installer/scripts/screen-switch.sh",
+	StrictIPValidation:       false,
+	AllowIPSubnetMatch:       true, // Default to subnet validation for good NAT compatibility
+	DisableIPValidation:      false,
+	MaxIPViolations:          3,
+	IPBlacklistDuration:      1 * time.Hour,
+}
 
 // getConfigPath returns the path for the config file based on environment variable or default
 func getConfigPath() string {
 	if path := os.Getenv("MSC_CONFIG_PATH"); path != "" {
 		return filepath.Join(path, configFile)
 	}
-	return filepath.Join(DEFAULT_PATH, configFile)
+	return filepath.Join(defaultPath, configFile)
 }
 
 func LoadOrCreateConfig() (ClientConfig, error) {
 	var cfg ClientConfig
 	configPath := getConfigPath()
 
+	// Try to load existing config
 	if data, err := os.ReadFile(configPath); err == nil {
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			return cfg, err
 		}
-		if err := ValidateConfig(cfg); err != nil {
-			return cfg, err
-		}
-		return cfg, nil
+	} else {
+		// Generate new UUID for new config
+		cfg.ClientID = uuid.New().String()
 	}
 
-	// Generate new UUID
-	cfg.ClientID = uuid.New().String()
-	cfg.StatusUpdateInterval = 5 * time.Second // Set default update interval
-	cfg.DisableCommands = false                // Default: commands are enabled
+	// Set all defaults if not already set
+	if cfg.StatusUpdateInterval == 0 {
+		cfg.StatusUpdateInterval = defaultConfig.StatusUpdateInterval
+	}
+	if cfg.MaxIPViolations == 0 {
+		cfg.MaxIPViolations = defaultConfig.MaxIPViolations
+	}
+	if cfg.IPBlacklistDuration == 0 {
+		cfg.IPBlacklistDuration = defaultConfig.IPBlacklistDuration
+	}
+	if cfg.VerificationCodeLength == 0 {
+		cfg.VerificationCodeLength = defaultConfig.VerificationCodeLength
+	}
+	if cfg.VerificationCodeAttempts == 0 {
+		cfg.VerificationCodeAttempts = defaultConfig.VerificationCodeAttempts
+	}
+	if cfg.PairingCodeExpiration == 0 {
+		cfg.PairingCodeExpiration = defaultConfig.PairingCodeExpiration
+	}
+	if cfg.ScreenSwitchPath == "" {
+		cfg.ScreenSwitchPath = defaultConfig.ScreenSwitchPath
+	}
 
-	// Set sensible defaults for IP validation (more permissive for better UX)
-	cfg.StrictIPValidation = false  // Don't require exact IP match by default
-	cfg.AllowIPSubnetMatch = true   // Allow same subnet by default (good for NAT)
-	cfg.DisableIPValidation = false // Keep some validation by default
+	// Set default IP validation (subnet mode for good NAT compatibility)
+	if !cfg.StrictIPValidation && !cfg.AllowIPSubnetMatch && !cfg.DisableIPValidation {
+		cfg.AllowIPSubnetMatch = defaultConfig.AllowIPSubnetMatch
+	}
 
-	// Set default security settings
-	cfg.MaxIPViolations = 3                 // Default: 3 violations before blacklisting
-	cfg.IPBlacklistDuration = 1 * time.Hour // Default: blacklist for 1 hour
+	// Load environment variables from .env file
+	loadEnv()
 
-	// Set default verification code settings
-	cfg.VerificationCodeLength = 6   // Default: 6 character code
-	cfg.VerificationCodeAttempts = 3 // Default: 3 attempts before invalidating
+	// Apply environment variable overrides
+	cfg.ApplyEnvironmentOverrides()
 
-	// Set default pairing code expiration
-	cfg.PairingCodeExpiration = 1 * time.Minute // Default: codes expire after 1 minute
+	// Validate configuration
+	if err := ValidateConfig(cfg); err != nil {
+		return cfg, err
+	}
 
+	// Save the updated config
 	if err := SaveConfig(cfg); err != nil {
 		return cfg, err
 	}
+
 	return cfg, nil
 }
 
@@ -140,7 +175,7 @@ func SaveConfig(cfg ClientConfig) error {
 	return os.WriteFile(configPath, data, 0600)
 }
 
-func LoadEnv() {
+func loadEnv() {
 	// Load environment variables from .env file
 	if err := godotenv.Load(); err != nil {
 		fmt.Println("Failed to load .env file, using system environment variables")
@@ -154,7 +189,7 @@ func (cfg *ClientConfig) ApplyEnvironmentOverrides() {
 			cfg.StatusUpdateInterval = duration
 		} else {
 			fmt.Printf("Warning: Invalid MSM_STATUS_UPDATE_INTERVAL value '%s', using default\n", updateStatusInterval)
-			cfg.StatusUpdateInterval = 5 * time.Second // Default value
+			cfg.StatusUpdateInterval = defaultConfig.StatusUpdateInterval
 		}
 	}
 
@@ -258,7 +293,7 @@ func (cfg *ClientConfig) DisableAllIPValidation() {
 
 func (cfg *ClientConfig) GetStatusUpdateInterval() time.Duration {
 	if cfg.StatusUpdateInterval <= 0 {
-		return 5 * time.Second // Default value
+		return defaultConfig.StatusUpdateInterval
 	}
 	return cfg.StatusUpdateInterval
 }
@@ -280,7 +315,7 @@ func (cfg *ClientConfig) GetIPValidationMode() string {
 // GetMaxIPViolations returns the max IP violations setting with default fallback
 func (cfg *ClientConfig) GetMaxIPViolations() int {
 	if cfg.MaxIPViolations <= 0 {
-		return 3 // Default value
+		return defaultConfig.MaxIPViolations
 	}
 	return cfg.MaxIPViolations
 }
@@ -288,7 +323,7 @@ func (cfg *ClientConfig) GetMaxIPViolations() int {
 // GetIPBlacklistDuration returns the IP blacklist duration with default fallback
 func (cfg *ClientConfig) GetIPBlacklistDuration() time.Duration {
 	if cfg.IPBlacklistDuration <= 0 {
-		return 1 * time.Hour // Default value
+		return defaultConfig.IPBlacklistDuration
 	}
 	return cfg.IPBlacklistDuration
 }
@@ -296,7 +331,7 @@ func (cfg *ClientConfig) GetIPBlacklistDuration() time.Duration {
 // GetVerificationCodeLength returns the verification code length with default fallback
 func (cfg *ClientConfig) GetVerificationCodeLength() int {
 	if cfg.VerificationCodeLength <= 0 {
-		return 6 // Default value
+		return defaultConfig.VerificationCodeLength
 	}
 	return cfg.VerificationCodeLength
 }
@@ -304,7 +339,7 @@ func (cfg *ClientConfig) GetVerificationCodeLength() int {
 // GetVerificationCodeAttempts returns the verification code attempts with default fallback
 func (cfg *ClientConfig) GetVerificationCodeAttempts() int {
 	if cfg.VerificationCodeAttempts <= 0 {
-		return 3 // Default value
+		return defaultConfig.VerificationCodeAttempts
 	}
 	return cfg.VerificationCodeAttempts
 }
@@ -312,7 +347,7 @@ func (cfg *ClientConfig) GetVerificationCodeAttempts() int {
 // GetPairingCodeExpiration returns the pairing code expiration with default fallback
 func (cfg *ClientConfig) GetPairingCodeExpiration() time.Duration {
 	if cfg.PairingCodeExpiration <= 0 {
-		return 1 * time.Minute // Default value
+		return defaultConfig.PairingCodeExpiration
 	}
 	return cfg.PairingCodeExpiration
 }
@@ -320,7 +355,7 @@ func (cfg *ClientConfig) GetPairingCodeExpiration() time.Duration {
 // GetScreenSwitchPath returns the screen switch path with default fallback
 func (cfg *ClientConfig) GetScreenSwitchPath() string {
 	if cfg.ScreenSwitchPath == "" {
-		return "/usr/local/bin/mediascreen-installer/scripts/screen-switch.sh" // Default value
+		return defaultConfig.ScreenSwitchPath
 	}
 	return cfg.ScreenSwitchPath
 }
