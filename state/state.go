@@ -57,8 +57,11 @@ func HasState() bool {
 }
 
 func DeleteState() error {
-	statePath := getStatePath()
-	return os.Remove(statePath)
+	err := os.Remove(getStatePath())
+	if os.IsNotExist(err) {
+		return nil // Ignore error if file does not exist
+	}
+	return err
 }
 
 // GetSessionKey returns the session key from the saved state, or empty string if not available
