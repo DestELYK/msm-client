@@ -84,44 +84,18 @@ func LoadOrCreateConfig() (ClientConfig, error) {
 		cfg.ClientID = uuid.New().String()
 	}
 
-	// Set all defaults if not already set
-	if cfg.StatusUpdateInterval == 0 {
-		cfg.StatusUpdateInterval = defaultConfig.StatusUpdateInterval
-	}
-	if cfg.MaxIPViolations == 0 {
-		cfg.MaxIPViolations = defaultConfig.MaxIPViolations
-	}
-	if cfg.IPBlacklistDuration == 0 {
-		cfg.IPBlacklistDuration = defaultConfig.IPBlacklistDuration
-	}
-	if cfg.VerificationCodeLength == 0 {
-		cfg.VerificationCodeLength = defaultConfig.VerificationCodeLength
-	}
-	if cfg.VerificationCodeAttempts == 0 {
-		cfg.VerificationCodeAttempts = defaultConfig.VerificationCodeAttempts
-	}
-	if cfg.PairingCodeExpiration == 0 {
-		cfg.PairingCodeExpiration = defaultConfig.PairingCodeExpiration
-	}
-	if cfg.ScreenSwitchPath == "" {
-		cfg.ScreenSwitchPath = defaultConfig.ScreenSwitchPath
-	}
-
-	// Set default IP validation (subnet mode for good NAT compatibility)
-	if !cfg.StrictIPValidation && !cfg.AllowIPSubnetMatch && !cfg.DisableIPValidation {
-		cfg.AllowIPSubnetMatch = defaultConfig.AllowIPSubnetMatch
-	}
-
 	// Load environment variables from .env file
 	loadEnv()
 
 	// Apply environment variable overrides
 	cfg.ApplyEnvironmentOverrides()
 
-	// Validate configuration
-	if err := ValidateConfig(cfg); err != nil {
+	// Validate and auto-correct configuration
+	correctedCfg, err := ValidateConfig(cfg)
+	if err != nil {
 		return cfg, err
 	}
+	cfg = correctedCfg
 
 	// Save the updated config
 	if err := SaveConfig(cfg); err != nil {
@@ -131,31 +105,58 @@ func LoadOrCreateConfig() (ClientConfig, error) {
 	return cfg, nil
 }
 
-func ValidateConfig(cfg ClientConfig) error {
-	if cfg.ClientID == "" {
-		return errors.New("missing client_id")
-	}
+func ValidateConfig(cfg ClientConfig) (ClientConfig, error) {
+	// Auto-correct invalid values by replacing with defaults
+
+	// Set all defaults if not already set or if invalid values are found
 	if cfg.StatusUpdateInterval <= 0 {
-		return errors.New("status_update_interval must be greater than 0")
+		cfg.StatusUpdateInterval = defaultConfig.StatusUpdateInterval
 	}
 	if cfg.MaxIPViolations < 0 {
-		return errors.New("max_ip_violations must be non-negative")
+		cfg.MaxIPViolations = defaultConfig.MaxIPViolations
 	}
 	if cfg.IPBlacklistDuration < 0 {
-		return errors.New("ip_blacklist_duration must be non-negative")
+		cfg.IPBlacklistDuration = defaultConfig.IPBlacklistDuration
 	}
-	if cfg.VerificationCodeLength < 0 {
-		return errors.New("verification_code_length must be non-negative")
+	if cfg.VerificationCodeLength <= 0 {
+		cfg.VerificationCodeLength = defaultConfig.VerificationCodeLength
 	}
-	if cfg.VerificationCodeAttempts < 0 {
-		return errors.New("verification_code_attempts must be non-negative")
+	if cfg.VerificationCodeAttempts <= 0 {
+		cfg.VerificationCodeAttempts = defaultConfig.VerificationCodeAttempts
 	}
-	if cfg.PairingCodeExpiration < 0 {
-		return errors.New("pairing_code_expiration must be non-negative")
+	if cfg.PairingCodeExpiration <= 0 {
+		cfg.PairingCodeExpiration = defaultConfig.PairingCodeExpiration
 	}
-	// Validate UUID format
-	_, err := uuid.Parse(cfg.ClientID)
-	return err
+	if cfg.ScreenSwitchPath == "" {
+		cfg.ScreenSwitchPath = defaultConfig.ScreenSwitchPath
+	}
+
+	// Validate and fix ClientID if invalid
+	if cfg.ClientID == "" {
+		cfg.ClientID = uuid.New().String()
+	} else {
+		// Check if ClientID is a valid UUID, if not generate a new one
+		if _, err := uuid.Parse(cfg.ClientID); err != nil {
+			cfg.ClientID = uuid.New().String()
+		}
+	}
+
+	// Set default IP validation (subnet mode for good NAT compatibility)
+	if !cfg.StrictIPValidation && !cfg.AllowIPSubnetMatch && !cfg.DisableIPValidation {
+		cfg.AllowIPSubnetMatch = defaultConfig.AllowIPSubnetMatch
+	}
+
+	// Final validation - should always pass since we've corrected everything above
+	if cfg.ClientID == "" {
+		return cfg, errors.New("missing client_id after correction attempt")
+	}
+
+	// Validate UUID format (should be valid since we correct it above)
+	if _, err := uuid.Parse(cfg.ClientID); err != nil {
+		return cfg, errors.New("invalid client_id format after correction attempt")
+	}
+
+	return cfg, nil
 }
 
 func SaveConfig(cfg ClientConfig) error {
