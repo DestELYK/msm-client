@@ -151,7 +151,7 @@ func TestSecuritySettings(t *testing.T) {
 }
 
 func TestConfigValidation(t *testing.T) {
-	// Test validation with negative security values
+	// Test that validation passes after auto-correction of invalid values
 	cfg := ClientConfig{
 		ClientID:                 "550e8400-e29b-41d4-a716-446655440000", // Valid UUID
 		StatusUpdateInterval:     30 * time.Second,
@@ -161,9 +161,10 @@ func TestConfigValidation(t *testing.T) {
 		VerificationCodeAttempts: -1,
 	}
 
-	err := ValidateConfig(cfg)
-	if err == nil {
-		t.Error("Expected validation error for negative security values")
+	// Now validation should pass because invalid values are auto-corrected before validation
+	_, err := ValidateConfig(cfg)
+	if err != nil {
+		t.Errorf("Expected validation to pass after auto-correction, got: %v", err)
 	}
 
 	// Test validation with valid values
@@ -172,23 +173,75 @@ func TestConfigValidation(t *testing.T) {
 	cfg.VerificationCodeLength = 8
 	cfg.VerificationCodeAttempts = 5
 
-	err = ValidateConfig(cfg)
+	_, err = ValidateConfig(cfg)
 	if err != nil {
 		t.Errorf("Expected no validation error, got: %v", err)
 	}
 
-	// Test validation with zero status update interval
+	// Test validation with invalid status update interval - should pass after auto-correction
 	cfg.StatusUpdateInterval = 0
-	err = ValidateConfig(cfg)
-	if err == nil {
-		t.Error("Expected validation error for zero status update interval")
+	_, err = ValidateConfig(cfg)
+	if err != nil {
+		t.Errorf("Expected validation to pass after auto-correction, got: %v", err)
 	}
 
-	// Test validation with negative status update interval
+	// Test validation with negative status update interval - should pass after auto-correction
 	cfg.StatusUpdateInterval = -1 * time.Second
-	err = ValidateConfig(cfg)
-	if err == nil {
-		t.Error("Expected validation error for negative status update interval")
+	_, err = ValidateConfig(cfg)
+	if err != nil {
+		t.Errorf("Expected validation to pass after auto-correction, got: %v", err)
+	}
+}
+
+func TestAutoCorrection(t *testing.T) {
+	// Test auto-correction behavior using ValidateConfig
+
+	// Test StatusUpdateInterval correction
+	cfg := ClientConfig{
+		ClientID:             "550e8400-e29b-41d4-a716-446655440000",
+		StatusUpdateInterval: -1 * time.Second, // Invalid
+	}
+
+	correctedCfg, err := ValidateConfig(cfg)
+	if err != nil {
+		t.Errorf("Expected validation to succeed with auto-correction, got: %v", err)
+	}
+
+	if correctedCfg.StatusUpdateInterval != 5*time.Second {
+		t.Errorf("Expected auto-corrected StatusUpdateInterval to be 5s, got %v", correctedCfg.StatusUpdateInterval)
+	}
+
+	// Test MaxIPViolations correction
+	cfg.MaxIPViolations = -5 // Invalid
+	correctedCfg, err = ValidateConfig(cfg)
+	if err != nil {
+		t.Errorf("Expected validation to succeed with auto-correction, got: %v", err)
+	}
+
+	if correctedCfg.MaxIPViolations != 3 {
+		t.Errorf("Expected auto-corrected MaxIPViolations to be 3, got %d", correctedCfg.MaxIPViolations)
+	}
+
+	// Test VerificationCodeLength correction
+	cfg.VerificationCodeLength = -1 // Invalid
+	correctedCfg, err = ValidateConfig(cfg)
+	if err != nil {
+		t.Errorf("Expected validation to succeed with auto-correction, got: %v", err)
+	}
+
+	if correctedCfg.VerificationCodeLength != 6 {
+		t.Errorf("Expected auto-corrected VerificationCodeLength to be 6, got %d", correctedCfg.VerificationCodeLength)
+	}
+
+	// Test VerificationCodeAttempts correction
+	cfg.VerificationCodeAttempts = 0 // Invalid
+	correctedCfg, err = ValidateConfig(cfg)
+	if err != nil {
+		t.Errorf("Expected validation to succeed with auto-correction, got: %v", err)
+	}
+
+	if correctedCfg.VerificationCodeAttempts != 3 {
+		t.Errorf("Expected auto-corrected VerificationCodeAttempts to be 3, got %d", correctedCfg.VerificationCodeAttempts)
 	}
 }
 
