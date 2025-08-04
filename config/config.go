@@ -45,7 +45,7 @@ type ClientConfig struct {
 
 const defaultPath = "/etc/msm-client" // Default path for config file
 
-const configFile = "client.json"
+const configFile = "config.json"
 
 // defaultConfig contains all default configuration values
 var defaultConfig = ClientConfig{
