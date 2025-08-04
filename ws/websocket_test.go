@@ -22,12 +22,12 @@ import (
 
 // MockWebSocketServer provides a test WebSocket server
 type MockWebSocketServer struct {
-	server    *httptest.Server
-	upgrader  websocket.Upgrader
-	clients   map[*websocket.Conn]bool
-	mu        sync.RWMutex
-	messages  []map[string]interface{}
-	onMessage func(map[string]interface{})
+	server     *httptest.Server
+	upgrader   websocket.Upgrader
+	clients    map[*websocket.Conn]bool
+	mu         sync.RWMutex
+	messages   []map[string]interface{}
+	onMessage  func(map[string]interface{})
 	sessionKey string
 }
 
@@ -60,13 +60,13 @@ func (m *MockWebSocketServer) GetURL() string {
 func (m *MockWebSocketServer) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	// Close all client connections
 	for conn := range m.clients {
 		conn.Close()
 		delete(m.clients, conn)
 	}
-	
+
 	m.server.Close()
 }
 
@@ -84,7 +84,7 @@ func (m *MockWebSocketServer) SetOnMessage(callback func(map[string]interface{})
 func (m *MockWebSocketServer) GetMessages() []map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	// Return a copy
 	messages := make([]map[string]interface{}, len(m.messages))
 	copy(messages, m.messages)
@@ -215,7 +215,7 @@ func SetupTestEnvironment(t *testing.T) *TestEnvironment {
 	// Create config and state directories
 	configDir := filepath.Join(tempDir, "config")
 	stateDir := filepath.Join(tempDir, "state")
-	
+
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		t.Fatalf("Failed to create config directory: %v", err)
 	}
@@ -233,7 +233,7 @@ func SetupTestEnvironment(t *testing.T) *TestEnvironment {
 	testConfig := config.ClientConfig{
 		ClientID:             "test-client-123",
 		StatusUpdateInterval: 1 * time.Second,
-		DisableCommands:      true, // Disable command execution for testing
+		DisableCommands:      true,                       // Disable command execution for testing
 		ScreenSwitchPath:     "/usr/local/bin/ms-switch", // Mock path
 	}
 
@@ -293,14 +293,14 @@ func (te *TestEnvironment) Cleanup() {
 func (te *TestEnvironment) CreateTestState() error {
 	// Set state path environment variable to use our temp directory
 	os.Setenv("MSC_STATE_PATH", filepath.Dir(te.StateFile))
-	
+
 	// Generate test keys for ECDH
 	if err := utils.GenerateECDHKeyPair(); err != nil {
 		return fmt.Errorf("failed to generate ECDH key pair: %w", err)
 	}
 
 	clientPublicKey := utils.GetECDHPublicKey()
-	
+
 	// For testing, we'll simulate the server key exchange
 	// Generate a server key pair and derive shared secret
 	if err := utils.DeriveSharedSecret(clientPublicKey); err != nil {
@@ -313,7 +313,7 @@ func (te *TestEnvironment) CreateTestState() error {
 	}
 
 	sessionKey := utils.GetSessionKey()
-	
+
 	// Set session key in mock server
 	te.MockServer.SetSessionKey(sessionKey)
 
@@ -328,15 +328,15 @@ func (te *TestEnvironment) CreateTestState() error {
 
 func TestNewWebSocketManager(t *testing.T) {
 	wsm := NewWebSocketManager()
-	
+
 	if wsm == nil {
 		t.Error("NewWebSocketManager should not return nil")
 	}
-	
+
 	if wsm.IsConnected() {
 		t.Error("New WebSocketManager should not be connected")
 	}
-	
+
 	if wsm.IsShutdown() {
 		t.Error("New WebSocketManager should not be shutdown")
 	}
@@ -344,22 +344,22 @@ func TestNewWebSocketManager(t *testing.T) {
 
 func TestWebSocketManagerBasicOperations(t *testing.T) {
 	wsm := NewWebSocketManager()
-	
+
 	// Test initial state
 	if wsm.GetConnection() != nil {
 		t.Error("Initial connection should be nil")
 	}
-	
+
 	if wsm.IsConnected() {
 		t.Error("Should not be connected initially")
 	}
-	
+
 	// Test shutdown operations
 	wsm.SetShutdown()
 	if !wsm.IsShutdown() {
 		t.Error("Should be shutdown after SetShutdown")
 	}
-	
+
 	wsm.ResetShutdown()
 	if wsm.IsShutdown() {
 		t.Error("Should not be shutdown after ResetShutdown")
@@ -431,7 +431,7 @@ func TestMessageHandling(t *testing.T) {
 	// Set up message tracking
 	receivedMessages := make([]map[string]interface{}, 0)
 	messageReceived := make(chan bool, 10)
-	
+
 	env.MockServer.SetOnMessage(func(message map[string]interface{}) {
 		receivedMessages = append(receivedMessages, message)
 		messageReceived <- true
@@ -501,7 +501,7 @@ func TestCommandHandling(t *testing.T) {
 
 	// Set up message tracking
 	messageReceived := make(chan bool, 10)
-	
+
 	env.MockServer.SetOnMessage(func(message map[string]interface{}) {
 		messageReceived <- true
 	})
@@ -710,7 +710,7 @@ func TestDeactivatedMessage(t *testing.T) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	
+
 	if state.HasState() {
 		t.Error("State should be deleted after deactivated message")
 	}
@@ -865,7 +865,7 @@ func BenchmarkWebSocketConnection(b *testing.B) {
 		// In practice, you'd want to test specific operations
 		wsm := NewWebSocketManager()
 		wsm.TestMode = true
-		
+
 		// Test basic operations
 		wsm.SetShutdown()
 		wsm.ResetShutdown()
