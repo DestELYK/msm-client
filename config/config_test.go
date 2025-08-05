@@ -207,7 +207,7 @@ func TestAutoCorrection(t *testing.T) {
 		t.Errorf("Expected validation to succeed with auto-correction, got: %v", err)
 	}
 
-	if correctedCfg.StatusUpdateInterval != 5*time.Second {
+	if correctedCfg.StatusUpdateInterval != 30*time.Second {
 		t.Errorf("Expected auto-corrected StatusUpdateInterval to be 5s, got %v", correctedCfg.StatusUpdateInterval)
 	}
 
@@ -250,7 +250,7 @@ func TestStatusUpdateInterval(t *testing.T) {
 
 	// Test default value
 	interval := cfg.GetStatusUpdateInterval()
-	if interval != 5*time.Second {
+	if interval != 30*time.Second {
 		t.Errorf("Expected default status update interval of 5s, got %v", interval)
 	}
 
@@ -264,14 +264,14 @@ func TestStatusUpdateInterval(t *testing.T) {
 	// Test zero value falls back to default
 	cfg.StatusUpdateInterval = 0
 	interval = cfg.GetStatusUpdateInterval()
-	if interval != 5*time.Second {
+	if interval != 30*time.Second {
 		t.Errorf("Expected fallback to default status update interval of 5s, got %v", interval)
 	}
 
 	// Test negative value falls back to default
 	cfg.StatusUpdateInterval = -1 * time.Second
 	interval = cfg.GetStatusUpdateInterval()
-	if interval != 5*time.Second {
+	if interval != 30*time.Second {
 		t.Errorf("Expected fallback to default status update interval of 5s, got %v", interval)
 	}
 }

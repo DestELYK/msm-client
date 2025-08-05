@@ -49,7 +49,7 @@ const configFile = "config.json"
 
 // defaultConfig contains all default configuration values
 var defaultConfig = ClientConfig{
-	StatusUpdateInterval:     5 * time.Second,
+	StatusUpdateInterval:     30 * time.Second,
 	DisableCommands:          false,
 	VerificationCodeLength:   6,
 	VerificationCodeAttempts: 3,
