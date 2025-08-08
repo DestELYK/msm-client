@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +17,7 @@ import (
 
 type ClientConfig struct {
 	ClientID             string        `json:"client_id"`
+	DeviceName           string        `json:"device_name,omitempty"`            // Optional friendly name for the device
 	StatusUpdateInterval time.Duration `json:"status_update_interval,omitempty"` // How often to send status updates (default: 5 seconds)
 	DisableCommands      bool          `json:"disable_commands,omitempty"`       // Disable remote command execution
 
@@ -138,6 +140,16 @@ func ValidateConfig(cfg ClientConfig) (ClientConfig, error) {
 		// Check if ClientID is a valid UUID, if not generate a new one
 		if _, err := uuid.Parse(cfg.ClientID); err != nil {
 			cfg.ClientID = uuid.New().String()
+		}
+	}
+
+	if cfg.DeviceName != "" {
+		// Trim whitespace from device name
+		cfg.DeviceName = strings.TrimSpace(cfg.DeviceName)
+	} else {
+		hostname, hostErr := os.Hostname()
+		if hostErr == nil {
+			cfg.DeviceName = hostname
 		}
 	}
 

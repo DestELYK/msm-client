@@ -558,8 +558,9 @@ func (pm *PairingManager) HandlePair(cfg config.ClientConfig) http.HandlerFunc {
 		}
 
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"message": message,
-			"expiry":  pm.expiry.Format(time.RFC3339),
+			"deviceName": cfg.DeviceName,
+			"message":    message,
+			"expiry":     pm.expiry.Format(time.RFC3339),
 		})
 	}
 }
@@ -696,6 +697,7 @@ func (pm *PairingManager) HandleConfirm(cfg config.ClientConfig) http.HandlerFun
 		responseData := map[string]any{
 			"message":       "paired",
 			"clientId":      clientId,
+			"deviceName":    cfg.DeviceName,
 			"interfaces":    networkInterfaces,
 			"ecdhPublicKey": ecdhPublicKeyB64,
 		}
