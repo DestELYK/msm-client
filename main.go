@@ -70,6 +70,10 @@ func main() {
 	parser := argparse.NewParser("msm-client", "MediaScreen Manager Client")
 
 	startCmd := parser.NewCommand("start", "Start the client")
+	displayNameFlag := startCmd.String("", "device-name", &argparse.Options{
+		Required: false,
+		Help:     "Optional friendly name for the device",
+	})
 	disableCommandsFlag := startCmd.Flag("", "disable-commands", &argparse.Options{
 		Required: false,
 		Help:     "Disable execution of remote commands (reboot, etc.) for security",
@@ -145,6 +149,16 @@ func main() {
 		cfg, err := config.LoadOrCreateConfig()
 		if err != nil {
 			log.Fatalf("Invalid config: %v", err)
+		}
+
+		// Set device name if provided
+		if displayNameFlag != nil && *displayNameFlag != "" {
+			cfg.DeviceName = *displayNameFlag
+			log.Printf("Device name set to: %s", cfg.DeviceName)
+		} else if cfg.DeviceName != "" {
+			log.Printf("Device name: %s", cfg.DeviceName)
+		} else {
+			log.Println("Device name not set")
 		}
 
 		// Set command execution flag based on command line argument
