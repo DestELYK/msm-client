@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -144,7 +145,7 @@ func ValidateConfig(cfg ClientConfig) (ClientConfig, error) {
 
 	if cfg.DeviceName != "" {
 		// Trim whitespace from device name
-		cfg.DeviceName = string([]byte(cfg.DeviceName))
+		cfg.DeviceName = strings.TrimSpace(cfg.DeviceName)
 	} else {
 		hostname, hostErr := os.Hostname()
 		if hostErr == nil {

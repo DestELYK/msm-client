@@ -70,7 +70,7 @@ func main() {
 	parser := argparse.NewParser("msm-client", "MediaScreen Manager Client")
 
 	startCmd := parser.NewCommand("start", "Start the client")
-	displayNameFlag := startCmd.String("", "device-name", &argparse.Options{
+	deviceNameFlag := startCmd.String("", "device-name", &argparse.Options{
 		Required: false,
 		Help:     "Optional friendly name for the device",
 	})
@@ -152,8 +152,8 @@ func main() {
 		}
 
 		// Set device name if provided
-		if displayNameFlag != nil && *displayNameFlag != "" {
-			cfg.DeviceName = *displayNameFlag
+		if *deviceNameFlag != "" {
+			cfg.DeviceName = *deviceNameFlag
 			log.Printf("Device name set to: %s", cfg.DeviceName)
 		} else if cfg.DeviceName != "" {
 			log.Printf("Device name: %s", cfg.DeviceName)
