@@ -2,6 +2,7 @@ package utils
 
 import (
 	"net"
+	"regexp"
 	"strings"
 )
 
@@ -11,6 +12,44 @@ type InterfaceInfo struct {
 	MACAddress string `json:"mac_address"`
 	Type       string `json:"type"` // "wifi", "ethernet", "other"
 	IsUp       bool   `json:"is_up"`
+}
+
+// IPv6 regex patterns
+var (
+	// Full IPv6 address (8 groups of 4 hex digits)
+	ipv6FullRegex = regexp.MustCompile(`^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$`)
+	
+	// Compressed IPv6 address (with :: notation)
+	ipv6CompressedRegex = regexp.MustCompile(`^(([0-9a-fA-F]{1,4}:)*)?::([0-9a-fA-F]{1,4}:)*[0-9a-fA-F]{1,4}$|^::$|^::1$`)
+	
+	// IPv6 with embedded IPv4 (e.g., ::ffff:192.0.2.1)
+	ipv6EmbeddedIPv4Regex = regexp.MustCompile(`^(([0-9a-fA-F]{1,4}:)*)?::(ffff:)?((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$`)
+	
+	// Link-local IPv6 addresses (fe80::/10)
+	ipv6LinkLocalRegex = regexp.MustCompile(`^fe[89ab][0-9a-fA-F]:`)
+)
+
+// IsIPv6 determines if the given IP address is IPv6 using regex
+func IsIPv6(ip string) bool {
+	// Remove any zone identifier (e.g., %eth0)
+	if idx := strings.LastIndex(ip, "%"); idx != -1 {
+		ip = ip[:idx]
+	}
+	
+	// Check against all IPv6 patterns
+	return ipv6FullRegex.MatchString(ip) || 
+		   ipv6CompressedRegex.MatchString(ip) || 
+		   ipv6EmbeddedIPv4Regex.MatchString(ip)
+}
+
+// IsIPv6LinkLocal determines if the given IPv6 address is a link-local address
+func IsIPv6LinkLocal(ip string) bool {
+	// Remove any zone identifier (e.g., %eth0)
+	if idx := strings.LastIndex(ip, "%"); idx != -1 {
+		ip = ip[:idx]
+	}
+	
+	return ipv6LinkLocalRegex.MatchString(ip)
 }
 
 // detectInterfaceType attempts to determine if an interface is WiFi, Ethernet, or other
@@ -78,8 +117,8 @@ func GetAllInterfaces() []InterfaceInfo {
 				continue
 			}
 
-			// Skip IPv6 link-local addresses
-			if strings.HasPrefix(ipAddr, "fe80:") {
+			// Skip IPv6 link-local addresses using regex
+			if IsIPv6LinkLocal(ipAddr) {
 				continue
 			}
 
@@ -200,4 +239,46 @@ func GetMacAddress(ip string) string {
 	}
 
 	return "00:00:00:00:00:00"
+}
+
+// GetIPv4Interfaces returns only interfaces with IPv4 addresses
+func GetIPv4Interfaces() []InterfaceInfo {
+	allInterfaces := GetAllInterfaces()
+	var ipv4Interfaces []InterfaceInfo
+
+	for _, iface := range allInterfaces {
+		if !IsIPv6(iface.IPAddress) {
+			ipv4Interfaces = append(ipv4Interfaces, iface)
+		}
+	}
+
+	return ipv4Interfaces
+}
+
+// GetIPv6Interfaces returns only interfaces with IPv6 addresses
+func GetIPv6Interfaces() []InterfaceInfo {
+	allInterfaces := GetAllInterfaces()
+	var ipv6Interfaces []InterfaceInfo
+
+	for _, iface := range allInterfaces {
+		if IsIPv6(iface.IPAddress) {
+			ipv6Interfaces = append(ipv6Interfaces, iface)
+		}
+	}
+
+	return ipv6Interfaces
+}
+
+// GetInterfaceIPVersion returns "ipv4", "ipv6", or "unknown" for the given IP address
+func GetInterfaceIPVersion(ip string) string {
+	if IsIPv6(ip) {
+		return "ipv6"
+	}
+	
+	// Simple IPv4 validation
+	if net.ParseIP(ip) != nil && !IsIPv6(ip) {
+		return "ipv4"
+	}
+	
+	return "unknown"
 }
